@@ -228,5 +228,19 @@ class TestRealEstateAucklandMaxRuntime(unittest.TestCase):
             "Hardcoded 1.2h runtime was a bug and must not exist")
 
 
+class TestPropertyValueEngineBackfill(unittest.TestCase):
+    def test_run_backfill_uses_suburbs_filter_in_query(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="backfill", region="auckland", task_id=10, suburbs_filter="Albany,Torbay")
+        engine.simulate = False
+        mock_db = MagicMock()
+        mock_db.query.return_value = []
+        with patch('scrapers.property_value_engine.db', mock_db):
+            asyncio.run(engine.run_backfill())
+        target_calls = [c for c in mock_db.query.call_args_list if "LOWER(suburb) = ANY(%s)" in c[0][0]]
+        self.assertEqual(len(target_calls), 1)
+        self.assertEqual(target_calls[0][0][1], ("auckland", ["albany", "torbay"]))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

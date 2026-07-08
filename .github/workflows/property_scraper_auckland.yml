@@ -95,7 +95,7 @@ jobs:
         if: steps.check_lock.outputs.should_run == 'true'
         run: |
           MODE="${{ inputs.mode || 'discovery' }}"
-          ARGS=(--mode "$MODE")
+          ARGS=(--mode "$MODE" --max_runtime 5.2)
           if [ "${{ inputs.force_run }}" = "true" ]; then
             ARGS+=(--force)
           fi
@@ -103,6 +103,13 @@ jobs:
             ARGS+=(--suburbs "${{ inputs.suburbs }}")
           fi
           python scrapers/property_value_engine.py "${ARGS[@]}" --region "auckland" --task_id ${{ steps.task_id.outputs.task_id }}
+          if [ "$MODE" = "discovery" ]; then
+            BACKFILL_ARGS=(--mode "backfill" --region "auckland" --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5.2)
+            if [ -n "${{ inputs.suburbs }}" ]; then
+              BACKFILL_ARGS+=(--suburbs "${{ inputs.suburbs }}")
+            fi
+            python scrapers/property_value_engine.py "${BACKFILL_ARGS[@]}"
+          fi
 
       - name: Reset status on completion or failure
         if: always() && steps.check_lock.outputs.should_run == 'true'

@@ -23,15 +23,14 @@ REGION_BASE_PATHS = {
 }
 
 class PropertyValueEngine(BaseScraper):
-    def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None):
+    def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5):
         super().__init__(mode, force_run, simulate, region)
         self.base_url = "https://www.propertyvalue.co.nz"
         self.region_path = REGION_BASE_PATHS.get(region, f"/{region}")
         self.task_id = task_id
         self.task_key = f"propertyvalue_{self.mode}_{self.region}"
         self.start_time = time.monotonic()
-        self.max_runtime = 5.5 * 3600
-        # Suburb filter: comma-separated list of suburb names (case-insensitive)
+        self.max_runtime = max_runtime * 3600
         self.suburbs_filter = [
             s.strip().lower() for s in suburbs_filter.split(',') if s.strip()
         ] if suburbs_filter else None
@@ -258,12 +257,20 @@ class PropertyValueEngine(BaseScraper):
             properties = []
             if not self.simulate:
                 try:
-                    sql = """
-                        SELECT id, address, property_url FROM properties
-                        WHERE (bedrooms IS NULL OR year_built IS NULL) AND region = %s
-                        ORDER BY created_at ASC LIMIT 50
-                    """
-                    properties = db.query(sql, (self.region,))
+                    if self.suburbs_filter:
+                        sql = """
+                            SELECT id, address, property_url FROM properties
+                            WHERE (bedrooms IS NULL OR year_built IS NULL) AND region = %s AND LOWER(suburb) = ANY(%s)
+                            ORDER BY created_at ASC LIMIT 50
+                        """
+                        properties = db.query(sql, (self.region, self.suburbs_filter))
+                    else:
+                        sql = """
+                            SELECT id, address, property_url FROM properties
+                            WHERE (bedrooms IS NULL OR year_built IS NULL) AND region = %s
+                            ORDER BY created_at ASC LIMIT 50
+                        """
+                        properties = db.query(sql, (self.region,))
                 except Exception as e:
                     logger.warning(f"Database query failed: {e}")
 
@@ -376,7 +383,8 @@ if __name__ == "__main__":
     parser.add_argument("--task_id", type=int, help="Task ID for progress tracking")
     parser.add_argument("--suburbs", type=str, default=None,
                         help="Comma-separated suburb names to filter (e.g. 'Northcross,Torbay,Beach Haven')")
+    parser.add_argument("--max_runtime", type=float, default=5.5, help="Max runtime in hours")
     args = parser.parse_args()
 
-    engine = PropertyValueEngine(args.mode, args.force, args.simulate, args.region, args.task_id, args.suburbs)
+    engine = PropertyValueEngine(args.mode, args.force, args.simulate, args.region, args.task_id, args.suburbs, args.max_runtime)
     asyncio.run(engine.run())

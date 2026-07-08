@@ -63,12 +63,24 @@ class PropertyValueParser:
         return next_link.get('href') if next_link else None
 
     @staticmethod
+    def _parse_price_short(price_str):
+        if not price_str:
+            return None
+        s = price_str.replace('$', '').replace(',', '').strip()
+        multiplier = 1
+        if s.upper().endswith('K'):
+            multiplier = 1000
+            s = s[:-1]
+        elif s.upper().endswith('M'):
+            multiplier = 1000000
+            s = s[:-1]
+        try:
+            return float(s) * multiplier
+        except ValueError:
+            return None
+
+    @staticmethod
     def parse_detail_data(html):
-        """Extract structured property data from rendered HTML using testid attributes.
-        
-        propertyvalue.co.nz is a React SPA (not Next.js SSR), so __NEXT_DATA__ does NOT exist.
-        All data must be extracted from the rendered DOM using testid selectors.
-        """
         soup = BeautifulSoup(html, 'html.parser')
         data = {
             "bedrooms": None, "bathrooms": None, "car_spaces": None,
@@ -83,60 +95,175 @@ class PropertyValueParser:
             "images": [], "history": [], "description": None
         }
 
-        # 1. Core property attributes (bed/bath/car/land/floor) via testid
-        data["bedrooms"] = PropertyValueParser._extract_int_by_testid(soup, 'bed')
-        data["bathrooms"] = PropertyValueParser._extract_int_by_testid(soup, 'bath')
-        data["car_spaces"] = PropertyValueParser._extract_int_by_testid(soup, 'car')
-        data["year_built"] = PropertyValueParser._extract_int_by_testid(soup, 'yearBuiltValue')
+        redux_data = {}
+        script = soup.find('script', string=re.compile(r'window\.REDUX_DATA\s*='))
+        if script and script.string:
+            m = re.search(r'window\.REDUX_DATA\s*=\s*({.*?})(?:;|$)', script.string)
+            if m:
+                try:
+                    import json
+                    redux_data = json.loads(m.group(1))
+                except Exception:
+                    pass
 
-        # Land area and floor area (contain nested <span> with <sup>2</sup>)
-        data["land_area"] = PropertyValueParser._extract_area_by_class(soup, 'land')
-        data["floor_area"] = PropertyValueParser._extract_area_by_class(soup, 'floor')
+        if redux_data:
+            prop_details = redux_data.get('PropertyDetails', {})
+            core = prop_details.get('core', {})
+            additional = prop_details.get('additional', {})
+            location = prop_details.get('location', {})
+            estimated_range = prop_details.get('estimatedRange', {})
+            rating_valuation = prop_details.get('ratingValuation', {})
+            sales = prop_details.get('sales', {})
+            images_data = prop_details.get('images', {})
+            timeline = prop_details.get('propertyTimeline', [])
 
-        # 2. Property Type (no testid, use label-value pair structure)
-        data["property_type"] = PropertyValueParser._extract_property_type(soup)
+            data["bedrooms"] = core.get("beds")
+            data["bathrooms"] = core.get("baths")
+            data["car_spaces"] = core.get("carSpaces")
+            
+            yb = additional.get("yearBuilt")
+            if yb:
+                try:
+                    data["year_built"] = int(yb)
+                except ValueError:
+                    pass
 
-        # 3. Rating Valuation values (Capital Value, Land Value, Improvement Value)
+            fa = additional.get("floorArea")
+            if fa:
+                data["floor_area"] = float(fa)
+                
+            la = core.get("landArea")
+            if la:
+                data["land_area"] = float(la)
+
+            pt = core.get("propertyType")
+            if pt:
+                data["property_type"] = pt.title()
+
+            cv = rating_valuation.get("capitalValue")
+            if cv:
+                data["capital_value"] = float(cv)
+                
+            lv = rating_valuation.get("landValue")
+            if lv:
+                data["land_value"] = float(lv)
+                
+            iv = rating_valuation.get("improvementValue")
+            if iv:
+                data["improvement_value"] = float(iv)
+
+            data["estimated_value_low"] = estimated_range.get("lowerBand")
+            data["estimated_value_high"] = estimated_range.get("upperBand")
+
+            last_sale = sales.get("lastSale", {})
+            data["last_sold_price"] = last_sale.get("price")
+            
+            contract_date = last_sale.get("contractDate")
+            if contract_date:
+                from datetime import datetime
+                try:
+                    dt = datetime.strptime(contract_date, "%Y-%m-%d")
+                    data["last_sold_date"] = dt.strftime("%d %b %Y").lstrip('0')
+                except Exception:
+                    data["last_sold_date"] = contract_date
+
+            data["latitude"] = location.get("latitude")
+            data["longitude"] = location.get("longitude")
+
+            for photo in images_data.get("propertyPhotoList", []):
+                url = photo.get("largePhotoUrl") or photo.get("mediumPhotoUrl") or photo.get("thumbnailPhotoUrl")
+                if url and url not in data["images"]:
+                    data["images"].append(url)
+
+            for event in timeline:
+                ev_type = event.get("type", "").lower()
+                ev_date = event.get("date", "")
+                price_desc = event.get("priceDescription", "")
+                desc = ""
+                if ev_type == "sale":
+                    desc = f"Sold for {price_desc}"
+                elif ev_type == "rent":
+                    desc = f"Listed for Rent - Last price at {price_desc} per week"
+                elif ev_type == "listing":
+                    desc = f"Asking Price \u2014 {price_desc}"
+                else:
+                    desc = f"{ev_type.title()} \u2014 {price_desc}"
+                
+                year = ev_date.split('/')[-1] if '/' in ev_date else ev_date
+                data["history"].append({
+                    'event_date': year,
+                    'event_description': desc,
+                    'event_interval': event.get("intervalDescription", "").strip()
+                })
+
+        if data["bedrooms"] is None:
+            data["bedrooms"] = PropertyValueParser._extract_int_by_testid(soup, 'bed')
+        if data["bathrooms"] is None:
+            data["bathrooms"] = PropertyValueParser._extract_int_by_testid(soup, 'bath')
+        if data["car_spaces"] is None:
+            data["car_spaces"] = PropertyValueParser._extract_int_by_testid(soup, 'car')
+        if data["year_built"] is None:
+            data["year_built"] = PropertyValueParser._extract_int_by_testid(soup, 'yearBuiltValue')
+        if data["land_area"] is None:
+            data["land_area"] = PropertyValueParser._extract_area_by_class(soup, 'land')
+        if data["floor_area"] is None:
+            data["floor_area"] = PropertyValueParser._extract_area_by_class(soup, 'floor')
+        if data["property_type"] is None:
+            data["property_type"] = PropertyValueParser._extract_property_type(soup)
+        
         rv = PropertyValueParser._extract_rating_valuation(soup)
-        data["capital_value"] = rv.get('capital_value')
-        data["land_value"] = rv.get('land_value')
-        data["improvement_value"] = rv.get('improvement_value')
+        if data["capital_value"] is None:
+            data["capital_value"] = rv.get('capital_value')
+        if data["land_value"] is None:
+            data["land_value"] = rv.get('land_value')
+        if data["improvement_value"] is None:
+            data["improvement_value"] = rv.get('improvement_value')
 
-        # 4. Description from story-content section
-        data["description"] = PropertyValueParser.extract_story_content(soup)
+        story_el = soup.find(attrs={'testid': 'story-content'})
+        if story_el:
+            text = story_el.get_text(separator=' ', strip=True)
+            data["description"] = re.sub(r'\s+', ' ', text).strip()
+        else:
+            about_heading = soup.find(string=re.compile(r'About\s+', re.IGNORECASE))
+            if about_heading and about_heading.parent:
+                next_sib = about_heading.parent.find_next_sibling()
+                if next_sib and next_sib.name in ('p', 'div', 'span'):
+                    text = next_sib.get_text(separator=' ', strip=True)
+                    data["description"] = re.sub(r'\s+', ' ', text).strip()
 
-        # 5. Images
-        data["images"] = PropertyValueParser.extract_images(soup)
+        if not data["images"]:
+            data["images"] = PropertyValueParser.extract_images(soup)
 
-        # 6. Property History (using testid patterns)
-        data["history"] = PropertyValueParser.extract_history(soup)
+        if not data["history"]:
+            data["history"] = PropertyValueParser.extract_history(soup)
 
-        # 7. Estimated value range
         ev = PropertyValueParser.extract_estimated_value(soup)
-        data["estimated_value_low"] = ev.get('low')
-        data["estimated_value_high"] = ev.get('high')
+        if data["estimated_value_low"] is None:
+            data["estimated_value_low"] = ev.get('low')
+        if data["estimated_value_high"] is None:
+            data["estimated_value_high"] = ev.get('high')
 
-        # 8. Last sold info (from Quick Facts section)
         ls = PropertyValueParser.extract_last_sold(soup)
-        data["last_sold_price"] = ls.get('price')
-        data["last_sold_date"] = ls.get('date')
+        if data["last_sold_price"] is None:
+            data["last_sold_price"] = ls.get('price')
+        if data["last_sold_date"] is None:
+            data["last_sold_date"] = ls.get('date')
 
-        # 9. Suburb insights
         si = PropertyValueParser.extract_suburb_insights(soup)
         data["suburb_median_price"] = si.get('median_price')
         data["suburb_median_rent"] = si.get('median_rent')
         data["suburb_days_on_market"] = si.get('days_on_market')
 
-        # 10. GPS coordinates from embedded map
         coords = PropertyValueParser.extract_coordinates(soup)
-        data["latitude"] = coords.get('latitude')
-        data["longitude"] = coords.get('longitude')
+        if data["latitude"] is None:
+            data["latitude"] = coords.get('latitude')
+        if data["longitude"] is None:
+            data["longitude"] = coords.get('longitude')
 
         return data
 
     @staticmethod
     def _extract_int_by_testid(soup, testid_value):
-        """Extract integer value from element with given testid attribute."""
         el = soup.find(attrs={'testid': testid_value})
         if el:
             text = el.get_text(strip=True)
@@ -147,8 +274,6 @@ class PropertyValueParser:
 
     @staticmethod
     def _extract_area_by_class(soup, class_name):
-        """Extract area in m² from element with given class (land or floor).
-        Handles nested <span>153 m<sup>2</sup></span> structure."""
         el = soup.find('span', class_=class_name)
         if el:
             text = el.get_text(strip=True)
@@ -157,8 +282,6 @@ class PropertyValueParser:
 
     @staticmethod
     def _extract_property_type(soup):
-        """Extract Property Type from label-value pair structure.
-        HTML: <div class='...propertyType...'><div>Property Type</div><div>Residential</div></div>"""
         type_zone = soup.find('div', class_=re.compile(r'PropertyAttributes_typeZone'))
         if type_zone:
             pairs = type_zone.find_all('div', class_=re.compile(r'propertyType'))
@@ -172,8 +295,6 @@ class PropertyValueParser:
 
     @staticmethod
     def _extract_rating_valuation(soup):
-        """Extract Capital Value, Land Value, Improvement Value from Rating Valuation section.
-        Uses CSS class selectors: .capitalValueValue, .landValueValue, .improvementValueValue."""
         result = {}
         value_map = {
             'capital_value': 'capitalValueValue',
@@ -184,7 +305,6 @@ class PropertyValueParser:
             el = soup.find('div', class_=css_class)
             if el:
                 text = el.get_text(strip=True)
-                # Parse "$1,050,000" -> 1050000
                 cleaned = text.replace('$', '').replace(',', '').strip()
                 try:
                     result[key] = float(cleaned)
@@ -196,10 +316,10 @@ class PropertyValueParser:
 
     @staticmethod
     def _clean_area(area_val):
-        """Clean area string (e.g., '200 m²', '1 ha') and return float in m²."""
-        if not area_val: return None
-        if isinstance(area_val, (int, float)): return float(area_val)
-        
+        if not area_val:
+            return None
+        if isinstance(area_val, (int, float)):
+            return float(area_val)
         try:
             s = str(area_val).lower().replace(',', '')
             num = float(re.search(r"(\d+\.?\d*)", s).group(1))
@@ -210,37 +330,13 @@ class PropertyValueParser:
             return None
 
     @staticmethod
-    def extract_story_content(soup):
-        """Extract property description from testid='story-content' element (About section)."""
-        story_el = soup.find(attrs={'testid': 'story-content'})
-        if story_el:
-            text = story_el.get_text(separator=' ', strip=True)
-            # Clean up excessive whitespace
-            text = re.sub(r'\s+', ' ', text).strip()
-            if text:
-                return text
-        # Fallback: try to find "About" section heading and grab the paragraph after it
-        about_heading = soup.find(string=re.compile(r'About\s+', re.IGNORECASE))
-        if about_heading and about_heading.parent:
-            next_sib = about_heading.parent.find_next_sibling()
-            if next_sib and next_sib.name in ('p', 'div', 'span'):
-                text = next_sib.get_text(separator=' ', strip=True)
-                text = re.sub(r'\s+', ' ', text).strip()
-                if text:
-                    return text
-        return None
-
-    @staticmethod
     def extract_images(soup):
-        """Extract property images from street view and gallery."""
         images = []
-        # Street view image (always present on property pages)
         street_view = soup.find('img', src=re.compile(r'maps\.googleapis\.com'))
         if street_view:
             src = street_view.get('src')
             if src:
                 images.append(src)
-        # Carousel/gallery images
         items = soup.select('div.carousel-inner div.carousel-item img')
         for img in items:
             src = img.get('src') or img.get('data-src')
@@ -250,32 +346,19 @@ class PropertyValueParser:
 
     @staticmethod
     def extract_history(soup):
-        """Extract property history events using testid patterns.
-        
-        HTML structure per event:
-          <div testid="pt-year-{idx}">2025</div>
-          <strong testid="pt-description-{idx}">Property Built</strong>
-          <div testid="pt-interval-{idx}">5 years ago</div>
-        """
         property_history = []
-        # Find all year elements (indexed 0, 1, 2, ...)
         year_els = soup.find_all(attrs={'testid': re.compile(r'^pt-year-\d+$')})
         for year_el in year_els:
             testid = year_el.get('testid', '')
-            # Extract index from testid (e.g., 'pt-year-0' -> 0)
             match = re.search(r'pt-year-(\d+)', testid)
             if not match:
                 continue
             idx = match.group(1)
-            
             event_date = year_el.get_text(strip=True)
-            
             desc_el = soup.find(attrs={'testid': f'pt-description-{idx}'})
             event_description = desc_el.get_text(strip=True) if desc_el else "Unknown"
-            
             interval_el = soup.find(attrs={'testid': f'pt-interval-{idx}'})
             event_interval = interval_el.get_text(strip=True) if interval_el else ""
-
             property_history.append({
                 'event_date': event_date,
                 'event_description': event_description,
@@ -283,68 +366,46 @@ class PropertyValueParser:
             })
         return property_history
 
-    # -----------------------------------------------------------------------
-    # Enhanced detail page parsers
-    # -----------------------------------------------------------------------
-
     @staticmethod
     def extract_estimated_value(soup):
-        """Extract estimated value range from the valuation section.
-
-        Example page text: '$900,000 – $1,000,000'
-        Returns dict with 'low' and 'high' as floats.
-        """
         result = {'low': None, 'high': None}
-        # Look for the value range container (CSS class pattern from PropertyValue SPA)
-        value_el = soup.find('div', class_=re.compile(r'estimatedValue|valueRange|EstimatedValue'))
+        value_el = soup.find(class_=re.compile(r'estimatedValue|valueRange|EstimatedValue'))
         if not value_el:
-            # Fallback: search text pattern like "$900,000 – $1,000,000"
-            text_block = soup.find(string=re.compile(r'\$[\d,]+\s*\u2013\s*\$[\d,]+'))
+            text_block = soup.find(string=re.compile(r'\$[\d,.]+\s*\u2013\s*\$[\d,.]+'))
             if text_block:
                 value_el = text_block
         if value_el:
             text = value_el.get_text(strip=True) if hasattr(value_el, 'get_text') else str(value_el)
-            amounts = re.findall(r'\$([\d,]+)', text)
+            amounts = re.findall(r'\$([\d,.]+)', text)
             if len(amounts) >= 2:
                 try:
-                    result['low'] = float(amounts[0].replace(',', ''))
-                    result['high'] = float(amounts[1].replace(',', ''))
+                    result['low'] = PropertyValueParser._parse_price_short(amounts[0])
+                    result['high'] = PropertyValueParser._parse_price_short(amounts[1])
                 except ValueError:
                     pass
         return result
 
     @staticmethod
     def extract_last_sold(soup):
-        """Extract last sold price and date from Quick Facts / property attributes.
-
-        Example page text: 'Last Sold: 4 Apr 2001 for $207,500'
-        """
         result = {'price': None, 'date': None}
-
-        # Try testid-based approach first
         sold_el = soup.find(attrs={'testid': 'lastSoldValue'}) or \
                   soup.find(attrs={'testid': 'lastSold'})
         if sold_el:
             text = sold_el.get_text(strip=True)
         else:
-            # Fallback: look for 'Last Sold' label in the Quick Facts bar
             label = soup.find(string=re.compile(r'last\s*sold', re.IGNORECASE))
             if label and label.parent:
-                # Get the sibling or parent container text
                 container = label.parent.find_next_sibling() or label.parent.parent
                 text = container.get_text(strip=True) if container else ''
             else:
                 text = ''
-
         if text:
-            # Extract price
             price_match = re.search(r'\$([\d,]+)', text)
             if price_match:
                 try:
                     result['price'] = float(price_match.group(1).replace(',', ''))
                 except ValueError:
                     pass
-            # Extract date (e.g., '4 Apr 2001' or '2001')
             date_match = re.search(r'(\d{1,2}\s+\w+\s+\d{4})', text)
             if date_match:
                 result['date'] = date_match.group(1)
@@ -352,46 +413,32 @@ class PropertyValueParser:
                 year_match = re.search(r'(\d{4})', text)
                 if year_match:
                     result['date'] = year_match.group(1)
-
         return result
 
     @staticmethod
     def extract_suburb_insights(soup):
-        """Extract suburb market stats from the Suburb Insights section.
-
-        Returns dict with median_price, median_rent (weekly), days_on_market.
-        """
         result = {'median_price': None, 'median_rent': None, 'days_on_market': None}
-
-        # Median Sale Price
-        price_el = soup.find(attrs={'testid': re.compile(r'medianSalePrice|medianPrice')})
+        price_el = soup.find(attrs={'testid': re.compile(r'^medianSalePrice$|^medianPrice$')})
         if not price_el:
             price_el = soup.find(string=re.compile(r'Median Sale Price', re.IGNORECASE))
         if price_el:
             container = price_el.parent if hasattr(price_el, 'parent') else None
             if container:
                 text = container.parent.get_text(strip=True)
-                m = re.search(r'\$([\d,]+[Kk]?)', text)
+                m = re.search(r'\$([\d.,]+[KkMm]?)', text)
                 if m:
                     result['median_price'] = PropertyValueParser._parse_price_short(m.group(1))
-
-        # Median Rent (weekly)
-        rent_el = soup.find(attrs={'testid': re.compile(r'medianRent')})
+        rent_el = soup.find(attrs={'testid': re.compile(r'^medianRent$')})
         if not rent_el:
             rent_el = soup.find(string=re.compile(r'Median Rent', re.IGNORECASE))
         if rent_el:
             container = rent_el.parent if hasattr(rent_el, 'parent') else None
             if container:
                 text = container.parent.get_text(strip=True)
-                m = re.search(r'\$([\d,]+)', text)
+                m = re.search(r'\$([\d.,]+[KkMm]?)', text)
                 if m:
-                    try:
-                        result['median_rent'] = float(m.group(1).replace(',', ''))
-                    except ValueError:
-                        pass
-
-        # Average Days on Market
-        dom_el = soup.find(attrs={'testid': re.compile(r'daysOnMarket|avgDays')})
+                    result['median_rent'] = PropertyValueParser._parse_price_short(m.group(1))
+        dom_el = soup.find(attrs={'testid': re.compile(r'^daysOnMarket$|^avgDays$')})
         if not dom_el:
             dom_el = soup.find(string=re.compile(r'Days on Market', re.IGNORECASE))
         if dom_el:
@@ -401,33 +448,11 @@ class PropertyValueParser:
                 m = re.search(r'(\d+)\s*days?', text, re.IGNORECASE)
                 if m:
                     result['days_on_market'] = int(m.group(1))
-
         return result
 
     @staticmethod
-    def _parse_price_short(price_str):
-        """Parse price with optional K suffix: '$960K' -> 960000, '$1,050,000' -> 1050000."""
-        if not price_str:
-            return None
-        s = price_str.replace('$', '').replace(',', '').strip()
-        multiplier = 1
-        if s.upper().endswith('K'):
-            multiplier = 1000
-            s = s[:-1]
-        try:
-            return float(s) * multiplier
-        except ValueError:
-            return None
-
-    @staticmethod
     def extract_coordinates(soup):
-        """Extract GPS coordinates from embedded Google Maps iframe or link.
-
-        Returns dict with 'latitude' and 'longitude' as floats.
-        """
         result = {'latitude': None, 'longitude': None}
-
-        # Strategy 1: Google Maps embed iframe
         iframe = soup.find('iframe', src=re.compile(r'maps\.google'))
         if iframe:
             src = iframe.get('src', '')
@@ -441,8 +466,6 @@ class PropertyValueParser:
                     return result
                 except ValueError:
                     pass
-
-        # Strategy 2: Google Maps link in anchor tag
         map_link = soup.find('a', href=re.compile(r'maps\.google'))
         if map_link:
             href = map_link.get('href', '')
@@ -454,8 +477,6 @@ class PropertyValueParser:
                     return result
                 except ValueError:
                     pass
-
-        # Strategy 3: data attributes or inline script with coordinates
         coord_script = soup.find('script', string=re.compile(r'latitude|latLng|coords'))
         if coord_script:
             text = coord_script.string
@@ -467,5 +488,4 @@ class PropertyValueParser:
                     result['longitude'] = float(lng_m.group(1))
                 except ValueError:
                     pass
-
         return result
