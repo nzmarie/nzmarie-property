@@ -251,7 +251,8 @@ class PropertyValueEngine(BaseScraper):
                 if len(address_parts) < 2:
                     address_parts = parts[:min(5, len(parts))]
                 
-                clean_address = ' '.join(address_parts).title()
+                # Smart format: detect unit numbers (e.g., "1 10" -> "1/10")
+                clean_address = self._format_address(address_parts)
                 
                 properties_to_save.append({
                     'address': clean_address,
@@ -387,6 +388,36 @@ class PropertyValueEngine(BaseScraper):
                     logger.error(f"Failed to backfill {prop['address']}: {e}")
                 finally:
                     await page.close()
+
+    @staticmethod
+    def _format_address(address_parts):
+        """
+        Smart address formatting with unit number detection.
+        
+        Examples:
+            ['1', '10', 'barker', 'rise'] -> '1/10 Barker Rise'
+            ['2', '23', 'cairnbrae', 'court'] -> '2/23 Cairnbrae Court'
+            ['65', 'andersons', 'road'] -> '65 Andersons Road'
+            ['1a', 'barker', 'rise'] -> '1A Barker Rise'
+        """
+        if not address_parts:
+            return ""
+        
+        # Check if first two parts are numbers (unit/street number pattern)
+        if len(address_parts) >= 2:
+            first = address_parts[0]
+            second = address_parts[1]
+            
+            # Pattern: "1 10" -> "1/10" (both are pure digits)
+            if first.isdigit() and second.isdigit():
+                # Unit number format
+                unit_part = f"{first}/{second}"
+                rest_parts = address_parts[2:]
+                formatted_rest = ' '.join(rest_parts).title()
+                return f"{unit_part} {formatted_rest}".strip()
+        
+        # Default: title case with spaces
+        return ' '.join(address_parts).title()
 
     @staticmethod
     def _extract_suburb_name(sub_link):
