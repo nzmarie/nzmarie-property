@@ -303,7 +303,6 @@ class PropertyValueEngine(BaseScraper):
                         logger.info(f"  [SIM] Beds: {data['bedrooms']}, Baths: {data['bathrooms']}, Year: {data['year_built']}")
                         continue
 
-                    # Update main properties table
                     update_sql = """
                         UPDATE properties
                         SET bedrooms = %s, bathrooms = %s, car_spaces = %s,
@@ -316,7 +315,8 @@ class PropertyValueEngine(BaseScraper):
                             last_sold_price = %s, last_sold_date = %s,
                             suburb_median_price = %s, suburb_median_rent = %s,
                             suburb_days_on_market = %s,
-                            latitude = %s, longitude = %s
+                            latitude = %s, longitude = %s,
+                            cover_image_url = %s
                         WHERE id = %s
                     """
                     db.execute(update_sql, (
@@ -333,6 +333,7 @@ class PropertyValueEngine(BaseScraper):
                         data.get('suburb_median_price'), data.get('suburb_median_rent'),
                         data.get('suburb_days_on_market'),
                         data.get('latitude'), data.get('longitude'),
+                        data['images'][0] if data['images'] else None,
                         prop['id']
                     ))
 
