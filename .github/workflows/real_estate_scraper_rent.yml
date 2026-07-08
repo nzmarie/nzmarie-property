@@ -4,7 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       force_run:
-        description: "Force run? (Resets status to idle)"
+        description: "Force run? (Resets status to idle, preserves page progress)"
+        required: false
+        type: boolean
+        default: false
+      reset_progress:
+        description: "Full reset? (Resets page to 0 - use to backfill new fields)"
         required: false
         type: boolean
         default: false
@@ -46,6 +51,10 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Full progress reset (re-scrape from page 0)
+        if: inputs.reset_progress == true
+        run: python database/scripts/gh_lock_manager.py --action reset-progress --task-id 4
+
       - name: Check and acquire lock
         id: check_lock
         env:
@@ -62,7 +71,6 @@ jobs:
       - name: Run scraper (rent)
         if: steps.check_lock.outputs.should_run == 'true'
         run: python real_estate_rent.py --task_id 4
-
 
       - name: Reset status on completion or failure
         if: always() && steps.check_lock.outputs.should_run == 'true'
@@ -84,7 +92,7 @@ jobs:
             echo "Task 4 is 'idle' (timed out). Triggering next run to resume..."
             curl -X POST -H "Accept: application/vnd.github.v3+json" -H "Authorization: token $GITHUB_TOKEN" \
             https://api.github.com/repos/${{ github.repository }}/actions/workflows/real_estate_scraper_rent.yml/dispatches \
-            -d "{\"ref\":\"main\", \"inputs\": {\"force_run\": \"false\"}}"
+            -d "{\"ref\":\"main\", \"inputs\": {\"force_run\": \"false\", \"reset_progress\": \"false\"}}"
           elif [ "$STATUS" = "complete" ]; then
             echo "Task 4 is 'complete'. Scraping cycle finished!"
           else

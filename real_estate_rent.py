@@ -24,7 +24,7 @@ logging.basicConfig(
 # Create logger
 logger = logging.getLogger(__name__)
 
-from config.supabase_config import insert_real_estate_rent, create_supabase_client
+from config.supabase_config import insert_real_estate_rent, create_supabase_client, upsert_real_estate_rent_detail
 
 # Function to create scraping progress table if it doesn't exist
 def create_scraping_progress_table():
@@ -342,9 +342,10 @@ def simulate_user_behavior(page):
         logger.error(f"Error simulating user behavior: {e}")
         logger.error(f"Error details: {traceback.format_exc()}")
 
-def fetch_addresses(page, url):
+def fetch_property_links_rent(page, url):
     """
-    Fetch addresses and coordinates from the given URL using the Shoebox JSON.
+    Fetch property detail page links from a rent listing page.
+    Returns list of relative URL strings like /residential/rent/...
     """
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -355,62 +356,130 @@ def fetch_addresses(page, url):
         return []
 
     try:
-        # 1. Try to extract from Shoebox JSON (Most robust)
-        content = page.content()
-        shoebox_match = re.search(r'<script type="fastboot/shoebox" id="shoebox-ember-data-storefront">([\s\S]*?)</script>', content)
-        if shoebox_match:
-            try:
-                raw_data = json.loads(shoebox_match.group(1))
-                listings = []
-                queries = raw_data.get('queries', {})
-                for q_key, q_val in queries.items():
-                    if isinstance(q_val, str):
-                        try:
-                            data = json.loads(q_val)
-                            if 'data' in data and isinstance(data['data'], list):
-                                for item in data['data']:
-                                    if item.get('type') == 'listing':
-                                        attrs = item.get('attributes', {})
-                                        addr_obj = attrs.get('address', {})
-                                        if addr_obj:
-                                            addr_str = addr_obj.get('display-address') or addr_obj.get('full-address')
-                                            if addr_str and isinstance(addr_str, str):
-                                                listings.append({
-                                                    'address': addr_str,
-                                                    'latitude': addr_obj.get('latitude'),
-                                                    'longitude': addr_obj.get('longitude')
-                                                })
-                        except: continue
-                if listings:
-                    print(f"Found {len(listings)} listings via Shoebox JSON")
-                    return listings
-            except Exception as e:
-                logger.warning(f"Error parsing Shoebox JSON: {e}")
-
-        # 2. Fallback to HTML selectors (Existing logic)
-        addresses = []
-        selectors = [
-            'h3[data-test="standard-tile__search-result__address"]',
-            '.standard-tile__search-result__address',
-            'h3[class*="address"]',
-            'div[class*="address"]',
-            'div[class*="listing-tile"] h3'
-        ]
-        
-        for selector in selectors:
-            address_elements = page.query_selector_all(selector)
-            if address_elements:
-                raw_addresses = [el.inner_text().strip() for el in address_elements if el.inner_text().strip()]
-                addresses = [{
-                    'address': addr, 'latitude': None, 'longitude': None
-                } for addr in raw_addresses if 'results in' not in addr.lower()]
-                if addresses:
-                    print(f"Found {len(addresses)} addresses via HTML selector")
-                    break
-        return addresses
+        selector = 'a[href*="/residential/rent/"]:not([href*="map"])'
+        links = [el.get_attribute('href') for el in page.locator(selector).all()]
+        unique_links = list(set([
+            l for l in links
+            if l and '/residential/rent/' in l and '?' not in l and re.search(r'/\d{6,}/', l)
+        ]))
+        logger.info(f"Found {len(unique_links)} rental property links on page.")
+        return unique_links
     except Exception as e:
-        logger.error(f"An error occurred while scraping {url}: {e}")
+        logger.error(f"An error occurred while fetching rent links from {url}: {e}")
         return []
+
+def scrape_rent_property_detail(page, relative_url):
+    """
+    Scrape detailed information (including images) from a rental property detail page.
+    """
+    import json as _json
+    base_url = "https://www.realestate.co.nz"
+    full_url = f"{base_url}{relative_url}" if relative_url.startswith('/') else relative_url
+
+    data = {
+        "property_url": full_url,
+        "original_link": full_url,
+        "status": "for Rent",
+        "listing_date_raw": None,
+        "price_display": None,
+        "address": None,
+        "agent_name": None,
+        "region": "auckland",
+        "latitude": None,
+        "longitude": None,
+    }
+
+    try:
+        if not relative_url.startswith('/'):
+            logger.warning(f"Invalid relative URL: {relative_url}")
+            return None
+
+        time.sleep(random.uniform(2, 4))
+        logger.info(f"Navigating to rental detail page: {full_url}")
+        page.goto(full_url, wait_until="domcontentloaded", timeout=45000)
+
+        addr_selectors = ['h1.p-h1', 'h1', '[data-test="address-display"]']
+        for sel in addr_selectors:
+            if page.locator(sel).first.is_visible():
+                address = page.locator(sel).first.inner_text().strip()
+                if address and 'results in' not in address.lower():
+                    data['address'] = address
+                    break
+
+        if not data.get('address'):
+            logger.warning(f"No valid address found for {full_url}")
+            return None
+
+        price_el = page.locator('[data-test="price-display"]').first
+        if price_el.is_visible():
+            data['price_display'] = price_el.inner_text().strip()
+
+        try:
+            date_el = page.get_by_text("Listed on", exact=False).first
+            if date_el.is_visible():
+                data['listing_date_raw'] = date_el.inner_text().strip()
+        except Exception:
+            pass
+
+        try:
+            agent_el = page.locator('[data-test="agent-name"], .agent-name').first
+            if agent_el.is_visible():
+                data['agent_name'] = agent_el.inner_text().strip()
+        except Exception:
+            pass
+
+        try:
+            features = page.evaluate("""
+                () => {
+                    const results = {};
+                    const iconGroups = document.querySelectorAll('div[data-test="features-icons"]');
+                    iconGroups.forEach(group => {
+                        const svg = group.querySelector('svg');
+                        const label = svg ? (svg.getAttribute('aria-labelledby') || '') : '';
+                        const span = group.querySelector('span');
+                        if (label && span) {
+                            if (label.includes('Bedroom')) results['bedrooms'] = span.innerText;
+                            if (label.includes('Bathroom')) results['bathrooms'] = span.innerText;
+                        }
+                    });
+                    return results;
+                }
+            """)
+            if features.get('bedrooms'):
+                m = re.search(r'\d+', features['bedrooms'])
+                if m: data['bedroom_count'] = int(m.group())
+            if features.get('bathrooms'):
+                m = re.search(r'\d+', features['bathrooms'])
+                if m: data['bathroom_count'] = int(m.group())
+        except Exception:
+            pass
+
+        try:
+            image_urls = page.evaluate("""
+                () => {
+                    const imgs = document.querySelectorAll('div[data-test="image"] img');
+                    const urls = [];
+                    imgs.forEach(img => {
+                        const src = img.getAttribute('src') || '';
+                        if (src && !src.startsWith('data:') && src.includes('mediaserver.realestate.co.nz')) {
+                            const highRes = src.replace(/\.crop\.\d+x\d+/, '.crop.1200x685');
+                            urls.push(highRes);
+                        }
+                    });
+                    return urls;
+                }
+            """)
+            if image_urls:
+                data['cover_image_url'] = image_urls[0]
+                data['images'] = _json.dumps(image_urls)
+        except Exception as e:
+            logger.warning(f"Error extracting images: {e}")
+
+        return data
+
+    except Exception as e:
+        logger.error(f"Error scraping rental detail {full_url}: {e}")
+        return None
 
 def check_real_estate_rent_in_supabase(address: str) -> bool:
     """
@@ -504,58 +573,49 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.2):
                 elapsed_time = time.time() - start_time
                 if elapsed_time > max_runtime_seconds:
                     logger.info(f"Maximum runtime of {max_runtime_hours} hours reached. Stopping...")
-                    # Save progress before exiting
                     update_last_processed_page(page_num - 1)
-                    # Update status to 'idle' for normal timeout, allowing next action to continue
                     supabase = create_supabase_client()
                     try:
                         supabase.table('scraping_progress').update({
                             'status': 'idle',
                             'updated_at': 'now()'
                         }).eq('id', 4).execute()
-                        logger.info("Rent scraper status updated to 'idle' due to 5.5 hour timeout.")
+                        logger.info("Rent scraper status updated to 'idle' due to timeout.")
                     except Exception as e:
                         logger.error(f"Error updating status to 'idle': {e}")
                     break
-                
-                # Update lock timestamp periodically to indicate we're still running
+
                 update_lock_timestamp()
-                
+
                 try:
                     url = f"{main_url}?page={page_num}"
-                    print(f"\nScraping page {page_num}: {url}")
-                    
-                    addresses = fetch_addresses(page, url)
-                    if addresses:
-                        # If we have data, set the flag
+                    print(f"\nScraping rent page {page_num}: {url}")
+
+                    links = fetch_property_links_rent(page, url)
+
+                    if links:
                         has_data_to_process = True
-                        all_addresses.extend(addresses)
-                        print(f"Found {len(addresses)} addresses on page {page_num}")
-                        for item in addresses:
-                            addr = item['address']
-                            lat = item['latitude']
-                            lng = item['longitude']
-                            print(f"  - {addr} ({lat}, {lng})")
-                            try:
-                                insert_real_estate_rent(addr, "To Rent", latitude=lat, longitude=lng)
-                            except Exception as e:
-                                logger.error(f"Error processing address {addr}: {e}")
-                                continue
+                        print(f"Found {len(links)} rental links on page {page_num}")
+
+                        for link in links:
+                            detail_data = scrape_rent_property_detail(page, link)
+                            if detail_data and detail_data.get('address'):
+                                upsert_real_estate_rent_detail(detail_data)
+                                print(f"✅ Saved rent: {detail_data.get('address')} | {detail_data.get('price_display')}")
+                            else:
+                                print(f"⚠️ Failed to scrape rent detail: {link}")
                     else:
-                        print(f"No addresses found on page {page_num}. Continuing to next page.")
-                    
-                    # Update progress after successfully processing a page
+                        print(f"No rental links found on page {page_num}. Continuing.")
+
                     update_last_processed_page(page_num)
-                    
+
                     if page_num < max_pages:
-                        delay = random.uniform(5, 10)
-                        print(f"Waiting for {delay:.2f} seconds before next request...")
+                        delay = random.uniform(3, 7)
                         time.sleep(delay)
-                
+
                 except Exception as e:
-                    logger.error(f"Error processing page {page_num}: {e}")
+                    logger.error(f"Error processing rent page {page_num}: {e}")
                     logger.error(f"Error details: {traceback.format_exc()}")
-                    # Save progress and continue with next page instead of stopping
                     update_last_processed_page(page_num)
                     continue
 
@@ -643,23 +703,18 @@ def clear_lock():
         logger.error(f"Error details: {traceback.format_exc()}")
 
 def main():
-    """
-    Main function to start the scraping process.
-    """
+    import argparse
+    arg_parser = argparse.ArgumentParser(description='Rent Real Estate Scraper')
+    arg_parser.add_argument('--task_id', type=int, default=4, help='Task ID (default: 4)')
+    args = arg_parser.parse_args()
+
     try:
         logger.info("Rent Real Estate Scraper")
         logger.info("========================")
-        
 
-        
         base_url = os.getenv("REALESTATE_URL") or "https://www.realestate.co.nz"
-        # Ensure base URL is just the domain
         base_url = base_url.replace('/residential/sale', '').replace('/residential/rental', '').rstrip('/')
-        
         main_url = f"{base_url}/residential/rental"
-        
-        # GitHub Actions already handles status management
-        # Removed: is_already_running() check
 
         max_pages = 412
         scrape_properties(main_url, max_pages)
@@ -668,7 +723,6 @@ def main():
     except Exception as e:
         logger.error(f"Error in main function: {e}")
         logger.error(f"Error details: {traceback.format_exc()}")
-        # Clear the lock on error in main execution
         clear_lock()
         raise
 
@@ -678,6 +732,5 @@ if __name__ == "__main__":
     except Exception as e:
         logger.error(f"Unexpected error in script execution: {e}")
         logger.error(f"Error details: {traceback.format_exc()}")
-        # Clear the lock on error in main execution
         clear_lock()
         exit(1)

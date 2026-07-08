@@ -111,9 +111,25 @@ def reset_status_for_reschedule(task_id):
     except Exception as e:
         print(f"Failed to reset status: {e}")
 
+def reset_full_progress(task_id):
+    print(f"Full progress reset for task {task_id}: status=idle, last_processed_id=NULL (will re-scrape from page 0)...")
+    try:
+        rows = db.query("SELECT status FROM scraping_progress WHERE id = %s", (task_id,))
+        if rows and rows[0].get('status') == 'running':
+            print(f"Task {task_id} is currently running. Aborting full reset to avoid data loss.")
+            return
+        db.execute(
+            "INSERT INTO scraping_progress (id, status, last_processed_id, updated_at) VALUES (%s, 'idle', NULL, NOW()) "
+            "ON CONFLICT (id) DO UPDATE SET status = 'idle', last_processed_id = NULL, updated_at = NOW()",
+            (task_id,)
+        )
+        print(f"Task {task_id} fully reset. Next run will start from page 0.")
+    except Exception as e:
+        print(f"Failed to reset full progress: {e}")
+
 def main():
     arg_parser = argparse.ArgumentParser(description='GitHub Actions Lock Manager for CockroachDB')
-    arg_parser.add_argument('--action', choices=['check', 'reset', 'reschedule', 'running', 'complete'], required=True)
+    arg_parser.add_argument('--action', choices=['check', 'reset', 'reschedule', 'running', 'complete', 'reset-progress'], required=True)
     arg_parser.add_argument('--task-id', type=int, required=True)
     arg_parser.add_argument('--force', action='store_true')
 
@@ -137,6 +153,8 @@ def main():
         set_running(args.task_id)
     elif args.action == 'complete':
         set_complete(args.task_id)
+    elif args.action == 'reset-progress':
+        reset_full_progress(args.task_id)
 
 if __name__ == "__main__":
     main()
