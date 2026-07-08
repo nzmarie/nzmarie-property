@@ -124,7 +124,24 @@ class TestPropertyValueParser(unittest.TestCase):
         self.assertEqual(len(data["history"]), 1)
         self.assertEqual(data["history"][0]["event_description"], "Sold for $900,000")
 
-
+    def test_extract_suburb_name(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        self.assertEqual(
+            PropertyValueEngine._extract_suburb_name("/auckland/north-shore-city/northcross-0630/201238"),
+            "northcross"
+        )
+        self.assertEqual(
+            PropertyValueEngine._extract_suburb_name("/auckland/north-shore-city/beach-haven-0626"),
+            "beach haven"
+        )
+        self.assertEqual(
+            PropertyValueEngine._extract_suburb_name("/auckland/north-shore-city/albany"),
+            "albany"
+        )
+        self.assertEqual(
+            PropertyValueEngine._extract_suburb_name("/auckland/north-shore-city/browns-bay-0630/12345"),
+            "browns bay"
+        )
 
 if __name__ == '__main__':
     unittest.main()

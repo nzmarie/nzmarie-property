@@ -350,12 +350,13 @@ class PropertyValueEngine(BaseScraper):
 
     @staticmethod
     def _extract_suburb_name(sub_link):
-        """Extract suburb name from a PropertyValue suburb URL path."""
         parts = sub_link.strip('/').split('/')
-        # URL pattern: /auckland/north-shore-city/beach-haven-0626
-        # suburb name is the last segment minus the optional postcode suffix
         if len(parts) >= 3:
-            return parts[-1].rsplit('-', 1)[0].replace('-', ' ').strip()
+            segment = parts[-2] if parts[-1].isdigit() else parts[-1]
+            sub_parts = segment.split('-')
+            if len(sub_parts) > 1 and sub_parts[-1].isdigit() and len(sub_parts[-1]) == 4:
+                return " ".join(sub_parts[:-1])
+            return segment.replace('-', ' ').strip()
         return ""
 
     async def run_refresh(self):
