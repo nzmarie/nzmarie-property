@@ -1,0 +1,102 @@
+name: Backfill Property Details (快速填充数据)
+
+on:
+  workflow_dispatch:
+    inputs:
+      suburbs:
+        description: "Suburbs to backfill (逗号分隔)"
+        required: true
+        default: "Northcross"
+        type: string
+      batch_size:
+        description: "每批处理数量"
+        required: false
+        default: "50"
+        type: string
+      max_runtime_hours:
+        description: "最大运行时间（小时）"
+        required: false
+        default: "1.8"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PROPERTY_VALUE_BASE_URL: ${{ secrets.PROPERTY_VALUE_BASE_URL }}
+      PYTHONPATH: .
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run Backfill Mode
+        run: |
+          SUBURBS="${{ inputs.suburbs }}"
+          MAX_RUNTIME="${{ inputs.max_runtime_hours }}"
+          
+          echo "========================================="
+          echo "🔄 Starting BACKFILL mode"
+          echo "========================================="
+          echo "Suburbs: $SUBURBS"
+          echo "Max runtime: ${MAX_RUNTIME} hours"
+          echo "========================================="
+          
+          python scrapers/property_value_engine.py \
+            --mode backfill \
+            --region auckland \
+            --suburbs "$SUBURBS" \
+            --max_runtime "$MAX_RUNTIME" \
+            --force
+          
+          EXIT_CODE=$?
+          
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo ""
+            echo "========================================="
+            echo "✅ Backfill completed successfully"
+            echo "========================================="
+          else
+            echo ""
+            echo "========================================="
+            echo "❌ Backfill failed with exit code $EXIT_CODE"
+            echo "========================================="
+            exit $EXIT_CODE
+          fi
+
+      - name: Show completion summary
+        if: success()
+        run: |
+          echo "🎉 Backfill 完成！"
+          echo ""
+          echo "验证数据："
+          echo "1. 前往前端查看房产卡片"
+          echo "2. 确认图片显示正常"
+          echo "3. 确认 RV、卧室数、浴室数等数据填充"
+
+      - name: Upload Error Screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-error-screenshots
+          path: screenshots/
+          retention-days: 7

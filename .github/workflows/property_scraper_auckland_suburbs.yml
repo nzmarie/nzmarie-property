@@ -84,46 +84,84 @@ jobs:
         if: steps.check_lock.outputs.should_run == 'true'
         run: python database/scripts/gh_lock_manager.py --action running --task-id ${{ steps.task_id.outputs.task_id }}
 
-      - name: Run Property Scraper
-        if: steps.check_lock.outputs.should_run == 'true'
+      - name: Run Discovery Mode
+        if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'discovery'
         run: |
-          MODE="${{ inputs.mode || 'discovery' }}"
-          ARGS=("--mode" "$MODE" "--region" "auckland" "--task_id" "${{ steps.task_id.outputs.task_id }}" "--max_runtime" "1.8")
-          if [ "${{ inputs.force_run }}" = "true" ]; then
-            ARGS+=("--force")
-          fi
           SUBURBS_VAL="${{ inputs.suburbs || 'Northcross,Oteha,Torbay,Fairview Heights,Waiake,Browns Bay,Pinehill,Rothesay Bay,Murrays Bay,Albany' }}"
-          if [ -n "$SUBURBS_VAL" ]; then
-            ARGS+=("--suburbs" "$SUBURBS_VAL")
-          fi
           
           echo "========================================="
-          echo "🚀 Starting ${MODE} mode"
+          echo "🚀 Starting DISCOVERY mode"
           echo "========================================="
-          python scrapers/property_value_engine.py "${ARGS[@]}"
+          
+          python scrapers/property_value_engine.py \
+            --mode discovery \
+            --region auckland \
+            --task_id ${{ steps.task_id.outputs.task_id }} \
+            --max_runtime 1.8 \
+            --suburbs "$SUBURBS_VAL" \
+            ${{ inputs.force_run && '--force' || '' }}
+          
           EXIT_CODE=$?
           
           if [ $EXIT_CODE -ne 0 ]; then
-            echo "❌ ${MODE} mode failed with exit code $EXIT_CODE"
+            echo "❌ Discovery mode failed with exit code $EXIT_CODE"
             exit $EXIT_CODE
           fi
           
-          if [ "$MODE" = "discovery" ]; then
-            echo ""
-            echo "========================================="
-            echo "🔄 Auto-starting BACKFILL mode after discovery"
-            echo "========================================="
-            BACKFILL_ARGS=("--mode" "backfill" "--region" "auckland" "--task_id" "${{ steps.task_id.outputs.task_id }}" "--max_runtime" "1.8")
-            if [ -n "$SUBURBS_VAL" ]; then
-              BACKFILL_ARGS+=("--suburbs" "$SUBURBS_VAL")
-            fi
-            python scrapers/property_value_engine.py "${BACKFILL_ARGS[@]}"
-            BACKFILL_EXIT=$?
-            if [ $BACKFILL_EXIT -ne 0 ]; then
-              echo "❌ Backfill mode failed with exit code $BACKFILL_EXIT"
-              exit $BACKFILL_EXIT
-            fi
+          echo "✅ Discovery mode completed successfully"
+
+      - name: Run Backfill Mode (after discovery or standalone)
+        if: steps.check_lock.outputs.should_run == 'true' && (inputs.mode == 'discovery' || inputs.mode == 'backfill')
+        run: |
+          SUBURBS_VAL="${{ inputs.suburbs || 'Northcross,Oteha,Torbay,Fairview Heights,Waiake,Browns Bay,Pinehill,Rothesay Bay,Murrays Bay,Albany' }}"
+          
+          echo ""
+          echo "========================================="
+          echo "� Starting BACKFILL mode"
+          echo "========================================="
+          
+          python scrapers/property_value_engine.py \
+            --mode backfill \
+            --region auckland \
+            --task_id ${{ steps.task_id.outputs.task_id }} \
+            --max_runtime 1.8 \
+            --suburbs "$SUBURBS_VAL" \
+            ${{ inputs.force_run && '--force' || '' }}
+          
+          EXIT_CODE=$?
+          
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Backfill mode failed with exit code $EXIT_CODE"
+            exit $EXIT_CODE
           fi
+          
+          echo "✅ Backfill mode completed successfully"
+
+      - name: Run Refresh Mode
+        if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'refresh'
+        run: |
+          SUBURBS_VAL="${{ inputs.suburbs || 'Northcross,Oteha,Torbay,Fairview Heights,Waiake,Browns Bay,Pinehill,Rothesay Bay,Murrays Bay,Albany' }}"
+          
+          echo "========================================="
+          echo "🔄 Starting REFRESH mode"
+          echo "========================================="
+          
+          python scrapers/property_value_engine.py \
+            --mode refresh \
+            --region auckland \
+            --task_id ${{ steps.task_id.outputs.task_id }} \
+            --max_runtime 1.8 \
+            --suburbs "$SUBURBS_VAL" \
+            ${{ inputs.force_run && '--force' || '' }}
+          
+          EXIT_CODE=$?
+          
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ Refresh mode failed with exit code $EXIT_CODE"
+            exit $EXIT_CODE
+          fi
+          
+          echo "✅ Refresh mode completed successfully"
 
       - name: Reset status
         if: always() && steps.check_lock.outputs.should_run == 'true'
