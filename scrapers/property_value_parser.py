@@ -221,8 +221,15 @@ class PropertyValueParser:
 
         story_el = soup.find(attrs={'testid': 'story-content'})
         if story_el:
-            text = story_el.get_text(separator=' ', strip=True)
-            data["description"] = re.sub(r'\s+', ' ', text).strip()
+            # Extract each paragraph separately and join with newline
+            paragraphs = story_el.find_all('p')
+            if paragraphs:
+                parts = [re.sub(r'\s+', ' ', p.get_text(separator=' ', strip=True)) for p in paragraphs if p.get_text(strip=True)]
+                data["description"] = '\n\n'.join(parts)
+            else:
+                # Fallback: get all text if no <p> tags found
+                text = story_el.get_text(separator=' ', strip=True)
+                data["description"] = re.sub(r'\s+', ' ', text).strip()
         else:
             about_heading = soup.find(string=re.compile(r'About\s+', re.IGNORECASE))
             if about_heading and about_heading.parent:

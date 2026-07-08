@@ -327,6 +327,13 @@ class PropertyValueEngine(BaseScraper):
                     if not await self.safe_goto(page, prop['property_url']):
                         continue
 
+                    # Wait for React-rendered story-content to appear (description)
+                    # Falls back gracefully if not found within timeout
+                    try:
+                        await page.wait_for_selector('[testid="story-content"]', timeout=8000)
+                    except Exception:
+                        pass  # Continue anyway — REDUX_DATA still provides other fields
+
                     content = await page.content()
                     data = PropertyValueParser.parse_detail_data(content)
 
