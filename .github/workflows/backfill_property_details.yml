@@ -1,20 +1,23 @@
-name: Backfill Property Details (快速填充数据)
+name: Backfill Property Details
 
 on:
   workflow_dispatch:
     inputs:
       suburbs:
-        description: "Suburbs to backfill (逗号分隔)"
+        description: "Suburbs to backfill (comma-separated, or 'all' for entire database)"
         required: true
         default: "Northcross"
         type: string
-      batch_size:
-        description: "每批处理数量"
+      region:
+        description: "Region to backfill"
         required: false
-        default: "50"
-        type: string
+        default: "auckland"
+        type: choice
+        options:
+          - auckland
+          - wellington
       max_runtime_hours:
-        description: "最大运行时间（小时）"
+        description: "Max runtime (hours)"
         required: false
         default: "1.8"
         type: string
@@ -59,24 +62,28 @@ jobs:
       - name: Run Backfill Mode
         run: |
           SUBURBS="${{ inputs.suburbs }}"
-          MAX_RUNTIME="${{ inputs.max_runtime_hours }}"
-          
+          REGION="${{ inputs.region || 'auckland' }}"
+          MAX_RUNTIME="${{ inputs.max_runtime_hours || '1.8' }}"
+
           echo "========================================="
           echo "🔄 Starting BACKFILL mode"
           echo "========================================="
-          echo "Suburbs: $SUBURBS"
+          echo "Region:      $REGION"
+          echo "Suburbs:     $SUBURBS"
           echo "Max runtime: ${MAX_RUNTIME} hours"
+          echo "Fills:       bedrooms, bathrooms, images, description, RV, sold price, etc."
           echo "========================================="
-          
-          python scrapers/property_value_engine.py \
-            --mode backfill \
-            --region auckland \
-            --suburbs "$SUBURBS" \
-            --max_runtime "$MAX_RUNTIME" \
-            --force
-          
+
+          # Build args — omit --suburbs entirely when input is 'all' so the
+          # scraper processes every record in the region that is missing data
+          ARGS=(--mode backfill --region "$REGION" --max_runtime "$MAX_RUNTIME" --force)
+          if [ "$SUBURBS" != "all" ] && [ -n "$SUBURBS" ]; then
+            ARGS+=(--suburbs "$SUBURBS")
+          fi
+
+          python scrapers/property_value_engine.py "${ARGS[@]}"
+
           EXIT_CODE=$?
-          
           if [ $EXIT_CODE -eq 0 ]; then
             echo ""
             echo "========================================="
@@ -93,12 +100,24 @@ jobs:
       - name: Show completion summary
         if: success()
         run: |
-          echo "🎉 Backfill 完成！"
           echo ""
-          echo "验证数据："
-          echo "1. 前往前端查看房产卡片"
-          echo "2. 确认图片显示正常"
-          echo "3. 确认 RV、卧室数、浴室数等数据填充"
+          echo "========================================="
+          echo "🎉 Backfill complete!"
+          echo "========================================="
+          echo ""
+          echo "Fields populated:"
+          echo "  ✅ cover_image_url  (property photo)"
+          echo "  ✅ images           (all photos JSONB)"
+          echo "  ✅ description      (story-content paragraphs)"
+          echo "  ✅ bedrooms / bathrooms / car_spaces"
+          echo "  ✅ floor_size / land_area"
+          echo "  ✅ capital_value / land_value / improvement_value"
+          echo "  ✅ last_sold_price / last_sold_date"
+          echo "  ✅ estimated_value_low / high"
+          echo "  ✅ latitude / longitude"
+          echo ""
+          echo "Verify: check frontend property cards for images and data."
+          echo "========================================="
 
       - name: Upload Error Screenshots
         if: failure()

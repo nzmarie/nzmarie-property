@@ -69,6 +69,8 @@ jobs:
         run: |
           python database/migrations/001_add_property_fingerprint_unique.py
           python database/migrations/003_add_sale_status_and_valuations.py
+          python database/migrations/004_add_images_column.py
+          python database/migrations/005_add_location_columns.py
 
       - name: Determine Task ID
         id: task_id
@@ -95,20 +97,50 @@ jobs:
         if: steps.check_lock.outputs.should_run == 'true'
         run: |
           MODE="${{ inputs.mode || 'discovery' }}"
-          ARGS=(--mode "$MODE" --max_runtime 5.2)
-          if [ "${{ inputs.force_run }}" = "true" ]; then
-            ARGS+=(--force)
+          SUBURBS="${{ inputs.suburbs }}"
+
+          echo "========================================="
+          echo "🚀 Starting $MODE mode"
+          echo "========================================="
+          echo "Region: auckland"
+          echo "Suburbs: ${SUBURBS:-all}"
+          echo "Max runtime: 5.2 hours"
+          echo "========================================="
+
+          ARGS=(--mode "$MODE" --region auckland --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5.2)
+          if [ "${{ inputs.force_run }}" = "true" ]; then ARGS+=(--force); fi
+          if [ -n "$SUBURBS" ]; then ARGS+=(--suburbs "$SUBURBS"); fi
+
+          python scrapers/property_value_engine.py "${ARGS[@]}"
+
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "❌ $MODE mode failed with exit code $EXIT_CODE"
+            exit $EXIT_CODE
           fi
-          if [ -n "${{ inputs.suburbs }}" ]; then
-            ARGS+=(--suburbs "${{ inputs.suburbs }}")
-          fi
-          python scrapers/property_value_engine.py "${ARGS[@]}" --region "auckland" --task_id ${{ steps.task_id.outputs.task_id }}
+          echo "✅ $MODE mode completed successfully"
+
           if [ "$MODE" = "discovery" ]; then
-            BACKFILL_ARGS=(--mode "backfill" --region "auckland" --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5.2)
-            if [ -n "${{ inputs.suburbs }}" ]; then
-              BACKFILL_ARGS+=(--suburbs "${{ inputs.suburbs }}")
-            fi
+            echo ""
+            echo "========================================="
+            echo "🔄 Starting BACKFILL mode (auto after discovery)"
+            echo "========================================="
+            echo "Suburbs: ${SUBURBS:-all}"
+            echo "Max runtime: 5.2 hours"
+            echo "========================================="
+
+            # Run backfill without task_id and with --force to avoid lock conflicts
+            BACKFILL_ARGS=(--mode backfill --region auckland --max_runtime 5.2 --force)
+            if [ -n "$SUBURBS" ]; then BACKFILL_ARGS+=(--suburbs "$SUBURBS"); fi
+
             python scrapers/property_value_engine.py "${BACKFILL_ARGS[@]}"
+
+            EXIT_CODE=$?
+            if [ $EXIT_CODE -ne 0 ]; then
+              echo "❌ Backfill mode failed with exit code $EXIT_CODE"
+              exit $EXIT_CODE
+            fi
+            echo "✅ Backfill mode completed successfully"
           fi
 
       - name: Reset status on completion or failure
