@@ -410,8 +410,18 @@ def insert_real_estate(address: str, status: str, latitude: float = None, longit
 
 def insert_real_estate_rent(address: str, status: str, latitude: float = None, longitude: float = None) -> bool:
     try:
-        db.execute("INSERT INTO real_estate_rent (address, address_fingerprint, status, latitude, longitude) VALUES (%s, %s, %s, %s, %s)", 
-                   (address, get_canonical_address(address), status, latitude, longitude))
+        fingerprint = get_canonical_address(address)
+        db.execute(
+            """
+            INSERT INTO real_estate_rent (address, address_fingerprint, status, latitude, longitude)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (address_fingerprint) DO UPDATE SET
+                status = EXCLUDED.status,
+                latitude = COALESCE(EXCLUDED.latitude, real_estate_rent.latitude),
+                longitude = COALESCE(EXCLUDED.longitude, real_estate_rent.longitude)
+            """,
+            (address, fingerprint, status, latitude, longitude)
+        )
         return True
     except Exception as e:
         if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():

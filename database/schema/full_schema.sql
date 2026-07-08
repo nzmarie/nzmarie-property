@@ -74,7 +74,9 @@ CREATE TABLE IF NOT EXISTS real_estate (
     property_url TEXT,
     original_link TEXT,
     region TEXT DEFAULT 'auckland',
-    address_fingerprint TEXT
+    address_fingerprint TEXT,
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION
 );
 
 -- Rental properties table
@@ -95,7 +97,9 @@ CREATE TABLE IF NOT EXISTS real_estate_rent (
     property_url TEXT,
     original_link TEXT,
     region TEXT DEFAULT 'auckland',
-    address_fingerprint TEXT
+    address_fingerprint TEXT,
+    latitude DOUBLE PRECISION,
+    longitude DOUBLE PRECISION
 );
 
 CREATE TABLE IF NOT EXISTS property_history (
@@ -217,8 +221,8 @@ CREATE TABLE IF NOT EXISTS real_estate_archive (
 -- Address Fingerprint Indexes (Critical for cross-table joins)
 CREATE INDEX IF NOT EXISTS idx_properties_fingerprint ON properties (address_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_properties_sale_status ON properties (sale_status);
-CREATE INDEX IF NOT EXISTS idx_real_estate_fingerprint ON real_estate (address_fingerprint);
-CREATE INDEX IF NOT EXISTS idx_real_estate_rent_fingerprint ON real_estate_rent (address_fingerprint);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_real_estate_fingerprint ON real_estate (address_fingerprint) WHERE address_fingerprint IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_real_estate_rent_fingerprint ON real_estate_rent (address_fingerprint) WHERE address_fingerprint IS NOT NULL;
 
 -- Performance Indexes
 CREATE INDEX IF NOT EXISTS idx_real_estate_listing_date ON real_estate(listing_date);
