@@ -40,10 +40,20 @@ CREATE TABLE IF NOT EXISTS properties (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     region TEXT,
     cover_image_url TEXT,
-    address_fingerprint TEXT,
+    address_fingerprint TEXT UNIQUE,
     land_area_numeric NUMERIC,
     description TEXT,
-    property_type TEXT
+    property_type TEXT,
+    images JSONB,
+    image_sync_status INTEGER DEFAULT 0,
+    sale_status VARCHAR(50) DEFAULT 'unknown',
+    sale_status_source VARCHAR(255),
+    sale_status_updated_at TIMESTAMPTZ,
+    estimated_value_low DOUBLE PRECISION,
+    estimated_value_high DOUBLE PRECISION,
+    suburb_median_price DOUBLE PRECISION,
+    suburb_median_rent DOUBLE PRECISION,
+    suburb_days_on_market INTEGER
 );
 
 -- Real estate listings table (active listings)
@@ -88,7 +98,6 @@ CREATE TABLE IF NOT EXISTS real_estate_rent (
     address_fingerprint TEXT
 );
 
--- Property history events (sales, rentals, etc.)
 CREATE TABLE IF NOT EXISTS property_history (
     id VARCHAR(255) PRIMARY KEY DEFAULT md5(random()::text || clock_timestamp()::text),
     property_id VARCHAR(255) REFERENCES properties(id) ON DELETE CASCADE,
@@ -97,6 +106,21 @@ CREATE TABLE IF NOT EXISTS property_history (
     interval_since_last_event TEXT,
     UNIQUE(property_id, event_date, event_description)
 );
+
+CREATE TABLE IF NOT EXISTS property_history_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    property_id VARCHAR(255) REFERENCES properties(id) ON DELETE CASCADE,
+    event_date DATE NOT NULL,
+    event_type VARCHAR(50),
+    price NUMERIC,
+    description TEXT,
+    interval_since_last TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(property_id, event_date, description)
+);
+
+CREATE INDEX IF NOT EXISTS idx_property_history_events_prop_id ON property_history_events (property_id);
+CREATE INDEX IF NOT EXISTS idx_property_history_events_date ON property_history_events (event_date);
 
 -- AI prediction results
 CREATE TABLE IF NOT EXISTS property_status (
@@ -192,6 +216,7 @@ CREATE TABLE IF NOT EXISTS real_estate_archive (
 
 -- Address Fingerprint Indexes (Critical for cross-table joins)
 CREATE INDEX IF NOT EXISTS idx_properties_fingerprint ON properties (address_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_properties_sale_status ON properties (sale_status);
 CREATE INDEX IF NOT EXISTS idx_real_estate_fingerprint ON real_estate (address_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_real_estate_rent_fingerprint ON real_estate_rent (address_fingerprint);
 

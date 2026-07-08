@@ -88,16 +88,15 @@ jobs:
         if: steps.check_lock.outputs.should_run == 'true'
         run: |
           MODE="${{ inputs.mode || 'discovery' }}"
-          FORCE_FLAG=""
-          SUBURBS_FLAG=""
+          ARGS=("--mode" "$MODE" "--region" "auckland" "--task_id" "${{ steps.task_id.outputs.task_id }}")
           if [ "${{ inputs.force_run }}" = "true" ]; then
-            FORCE_FLAG="--force"
+            ARGS+=("--force")
           fi
           SUBURBS_VAL="${{ inputs.suburbs || 'Northcross,Oteha,Torbay,Fairview Heights,Waiake,Browns Bay,Pinehill,Rothesay Bay,Murrays Bay,Albany' }}"
           if [ -n "$SUBURBS_VAL" ]; then
-            SUBURBS_FLAG="--suburbs \"$SUBURBS_VAL\""
+            ARGS+=("--suburbs" "$SUBURBS_VAL")
           fi
-          python scrapers/property_value_engine.py --mode "$MODE" $FORCE_FLAG --region "auckland" --task_id ${{ steps.task_id.outputs.task_id }} $SUBURBS_FLAG
+          python scrapers/property_value_engine.py "${ARGS[@]}"
 
       - name: Reset status
         if: always() && steps.check_lock.outputs.should_run == 'true'
