@@ -133,7 +133,10 @@ class PropertyValueEngine(BaseScraper):
 
     async def run_discovery(self):
         logger.info(f"Starting Discovery Mode for region: {self.region}")
-        state = await self.get_state() or {}
+        if self.force_run or self.suburbs_filter:
+            state = {}
+        else:
+            state = await self.get_state() or {}
         last_ta_idx = state.get('ta_idx', 0)
         last_sub_idx = state.get('sub_idx', 0)
         last_page = state.get('page_num', 1)

@@ -94,6 +94,45 @@ class TestPropertyValueEngineCheckpoint(unittest.TestCase):
             asyncio.run(engine.set_status_by_id(10, 'running', '{"ta_idx":0}'))
         mock_db.execute.assert_not_called()
 
+    @patch('scrapers.property_value_engine.PropertyValueEngine.get_state')
+    def test_run_discovery_ignores_state_on_force_run(self, mock_get_state):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10, force_run=True)
+        engine.context = MagicMock()
+        engine.context.new_page = AsyncMock(side_effect=Exception("Stop execution"))
+        mock_get_state.return_value = {"ta_idx": 4, "sub_idx": 0, "page_num": 1}
+        try:
+            asyncio.run(engine.run_discovery())
+        except Exception as e:
+            self.assertEqual(str(e), "Stop execution")
+        mock_get_state.assert_not_called()
+
+    @patch('scrapers.property_value_engine.PropertyValueEngine.get_state')
+    def test_run_discovery_ignores_state_on_suburbs_filter(self, mock_get_state):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10, suburbs_filter="Albany")
+        engine.context = MagicMock()
+        engine.context.new_page = AsyncMock(side_effect=Exception("Stop execution"))
+        mock_get_state.return_value = {"ta_idx": 4, "sub_idx": 0, "page_num": 1}
+        try:
+            asyncio.run(engine.run_discovery())
+        except Exception as e:
+            self.assertEqual(str(e), "Stop execution")
+        mock_get_state.assert_not_called()
+
+    @patch('scrapers.property_value_engine.PropertyValueEngine.get_state')
+    def test_run_discovery_uses_state_otherwise(self, mock_get_state):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10)
+        engine.context = MagicMock()
+        engine.context.new_page = AsyncMock(side_effect=Exception("Stop execution"))
+        mock_get_state.return_value = {"ta_idx": 4, "sub_idx": 0, "page_num": 1}
+        try:
+            asyncio.run(engine.run_discovery())
+        except Exception as e:
+            self.assertEqual(str(e), "Stop execution")
+        mock_get_state.assert_called_once()
+
 
 class TestShouldStop(unittest.TestCase):
     """Validate time.monotonic()-based should_stop() correctness."""
