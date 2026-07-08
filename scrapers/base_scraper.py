@@ -22,8 +22,8 @@ class BaseScraper:
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         )
         
-        # Block images, fonts, and other non-essential resources to speed up scraping
-        await self.context.route("**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,mp4,webm,css}", 
+        # Block fonts and videos to speed up scraping, but allow images and CSS
+        await self.context.route("**/*.{woff,woff2,ttf,mp4,webm}", 
                                  lambda route: route.abort())
         
         logger.info(f"Browser initialized in {self.mode} mode for region: {self.region} (Resource blocking enabled)")
