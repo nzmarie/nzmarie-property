@@ -537,13 +537,7 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.2):
                             lng = item['longitude']
                             print(f"  - {addr} ({lat}, {lng})")
                             try:
-                                # Use Supabase to check for duplicates
-                                if not check_real_estate_rent_in_supabase(addr):
-                                    # Insert into Supabase
-                                    insert_real_estate_rent(addr, "To Rent", latitude=lat, longitude=lng)
-                                    print(f"Added new rental property to database: {addr}")
-                                else:
-                                    print(f"Rental property {addr} already exists. Skipping...")
+                                insert_real_estate_rent(addr, "To Rent", latitude=lat, longitude=lng)
                             except Exception as e:
                                 logger.error(f"Error processing address {addr}: {e}")
                                 continue

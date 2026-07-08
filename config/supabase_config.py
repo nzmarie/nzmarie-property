@@ -411,22 +411,30 @@ def insert_real_estate(address: str, status: str, latitude: float = None, longit
 def insert_real_estate_rent(address: str, status: str, latitude: float = None, longitude: float = None) -> bool:
     try:
         fingerprint = get_canonical_address(address)
-        db.execute(
-            """
-            INSERT INTO real_estate_rent (address, address_fingerprint, status, latitude, longitude)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (address_fingerprint) DO UPDATE SET
-                status = EXCLUDED.status,
-                latitude = COALESCE(EXCLUDED.latitude, real_estate_rent.latitude),
-                longitude = COALESCE(EXCLUDED.longitude, real_estate_rent.longitude)
-            """,
-            (address, fingerprint, status, latitude, longitude)
-        )
-        return True
+        try:
+            db.execute(
+                "INSERT INTO real_estate_rent (address, address_fingerprint, status, latitude, longitude) VALUES (%s, %s, %s, %s, %s)",
+                (address, fingerprint, status, latitude, longitude)
+            )
+            return True
+        except Exception as insert_err:
+            if "unique constraint" in str(insert_err).lower() or "duplicate key" in str(insert_err).lower():
+                if fingerprint and (latitude is not None or longitude is not None):
+                    db.execute(
+                        """
+                        UPDATE real_estate_rent SET
+                            status = %s,
+                            latitude = COALESCE(%s, latitude),
+                            longitude = COALESCE(%s, longitude)
+                        WHERE address_fingerprint = %s
+                        """,
+                        (status, latitude, longitude, fingerprint)
+                    )
+                return True
+            raise
     except Exception as e:
-        if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
-            return False
-        raise
+        logger.error(f"Error processing address {address}: {e}")
+        return False
 
 # Aliases for compatibility
 create_client = create_supabase_client
