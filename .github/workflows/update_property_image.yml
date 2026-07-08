@@ -1,0 +1,86 @@
+name: Update Property Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: "Force run? (Resets status to idle)"
+        required: false
+        default: "false"
+        type: boolean
+      recheck_missing:
+        description: "Recheck missing images? (Include NO_IMAGE & Street View)"
+        required: false
+        default: "false"
+        type: boolean
+  # Remove scheduled trigger to avoid conflicts with manual chaining
+  # schedule:
+  #   - cron: "0 */6 * * *"
+
+concurrency:
+  group: update-property-images
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  update-images:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360 # 6 hours
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run database migrations
+        run: |
+          python database/migrations/001_add_property_fingerprint_unique.py
+          python database/migrations/003_add_sale_status_and_valuations.py
+
+      - name: Check and acquire lock
+        id: check_lock
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          FORCE_RUN: ${{ inputs.force_run }}
+        run: python database/scripts/gh_lock_manager.py --action check --task-id 1 --force
+
+      - name: Set status to running
+        if: steps.check_lock.outputs.should_run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python database/scripts/gh_lock_manager.py --action running --task-id 1
+
+      - name: Run image updater
+        if: steps.check_lock.outputs.should_run == 'true'
+        run: |
+          if [ "${{ inputs.recheck_missing }}" == "true" ]; then
+            python property_image.py update_images --recheck-missing
+          else
+            python property_image.py update_images
+          fi
+
+      - name: Reset status on completion or failure
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python database/scripts/gh_lock_manager.py --action reset --task-id 1

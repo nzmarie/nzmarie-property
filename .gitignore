@@ -1,0 +1,41 @@
+# System & Logs
+*.log
+final_pipeline_log*.txt
+output*.txt
+*.tmp
+__pycache__/
+.pytest_cache/
+
+# Environments
+venv/
+.venv/
+property_forecast_env/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Project specific
+.env
+.idx/
+.qoder/
+.qodo/
+/.codebuddy/
+.amazonq/
+/tasks/
+/docs/
+shell.nix
+
+# Debug & Temporary
+debug_info/
+deprecated_scripts/
+*.joblib
+*.csv
+
+# SQL session files
+*.session.sql
+
+# Scratch / temp test scripts
+scratch/

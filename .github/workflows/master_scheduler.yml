@@ -1,0 +1,121 @@
+name: Monthly RealEstate Scraper
+
+on:
+  schedule:
+    - cron: "0 2 1 * *"
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: "Force run regardless of date"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  monthly-scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      FORCE_RUN: ${{ inputs.force_run }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Check and trigger monthly scrapers
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python -c "
+          import os
+          import requests
+          import time
+          import sys
+          from datetime import datetime, timezone, timedelta
+          from dateutil import parser
+
+          sys.path.append('.')
+          from utils.database import db
+
+          github_token = os.environ.get('GITHUB_TOKEN')
+          github_repo = os.environ.get('GITHUB_REPOSITORY')
+          force_run_env = os.environ.get('FORCE_RUN', 'false').lower() == 'true'
+
+          def trigger_workflow(workflow_file, inputs=None):
+              api_url = f'https://api.github.com/repos/{github_repo}/actions/workflows/{workflow_file}/dispatches'
+              headers = {
+                  'Authorization': f'token {github_token}',
+                  'Accept': 'application/vnd.github.v3+json'
+              }
+              data = {'ref': 'main'}
+              if inputs:
+                  data['inputs'] = {k: str(v) for k, v in inputs.items()}
+              response = requests.post(api_url, headers=headers, json=data)
+              if response.status_code == 204:
+                  print(f'Successfully triggered {workflow_file}')
+                  return True
+              else:
+                  print(f'Failed to trigger {workflow_file}. Status: {response.status_code}, Body: {response.text}')
+                  return False
+
+          def reset_task(task_id, task_name, preserve_checkpoint=False):
+              try:
+                  rows = db.query('SELECT status FROM scraping_progress WHERE id = %s', (task_id,))
+                  st = rows[0].get('status') if rows else 'idle'
+                  if st == 'running':
+                      print(f'Task {task_name} (id={task_id}) still running, skipping reset')
+                      return False
+                  if force_run_env:
+                      db.execute(\"UPDATE scraping_progress SET status='idle', last_processed_id='0', updated_at=NOW() WHERE id=%s\", (task_id,))
+                      print(f'Task {task_name} (id={task_id}) force reset from {st!r} to idle')
+                  elif preserve_checkpoint:
+                      db.execute(\"UPDATE scraping_progress SET status='idle', updated_at=NOW() WHERE id=%s\", (task_id,))
+                      print(f'Task {task_name} (id={task_id}) reset from {st!r} to idle')
+                  else:
+                      db.execute(\"UPDATE scraping_progress SET status='idle', last_processed_id='0', updated_at=NOW() WHERE id=%s\", (task_id,))
+                      print(f'Task {task_name} (id={task_id}) reset from {st!r} to idle')
+                  return True
+              except Exception as e:
+                  print(f'Failed to reset {task_name} (id={task_id}): {e}')
+                  return False
+
+          print('RealEstate Scraper (Auckland / Rent)')
+          re_task_map = {2: 'Auckland', 4: 'Rent'}
+          for tid, name in re_task_map.items():
+              reset_task(tid, f'RealEstate {name}', preserve_checkpoint=False)
+          trigger_workflow('real_estate_scraper_auckland.yml', {'force_run': str(force_run_env).lower()})
+          trigger_workflow('real_estate_scraper_rent.yml', {'force_run': str(force_run_env).lower()})
+
+          print('Property Value Scraper (Auckland Discovery / Auckland Suburbs)')
+          pv_task_map = {10: 'Auckland Discovery', 12: 'Auckland Suburbs'}
+          any_pv_reset = False
+          for tid, name in pv_task_map.items():
+              if reset_task(tid, f'PropertyValue {name}', preserve_checkpoint=True):
+                  any_pv_reset = True
+          if any_pv_reset:
+              print('Waiting 30m before triggering property_scraper...')
+              time.sleep(30 * 60)
+              trigger_workflow('property_scraper_auckland.yml', {'mode': 'discovery', 'force_run': str(force_run_env).lower()})
+              trigger_workflow('property_scraper_auckland_suburbs.yml', {'mode': 'discovery', 'force_run': str(force_run_env).lower()})
+          else:
+              print('All PropertyValue tasks are running, skipping trigger')
+          "

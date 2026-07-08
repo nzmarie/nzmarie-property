@@ -1,0 +1,187 @@
+name: Property Image Updater - Watchdog
+
+on:
+  schedule:
+    - cron: "0 */6 * * *" # Every 6 hours - check if task needs to resume
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  watchdog:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.9"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run database migrations
+        run: |
+          python database/migrations/001_add_property_fingerprint_unique.py
+          python database/migrations/003_add_sale_status_and_valuations.py
+
+      - name: Check if task needs to continue
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python -c "
+          import os
+          import sys
+          import requests
+          from datetime import datetime, timezone, timedelta
+          from dateutil import parser
+
+          # Add project root to path
+          sys.path.append(os.getcwd())
+          from config.supabase_config import create_supabase_client
+
+          github_token = os.environ.get('GITHUB_TOKEN')
+          github_repo = os.environ.get('GITHUB_REPOSITORY')
+
+          supabase = create_supabase_client()
+
+          def trigger_workflow():
+              '''Trigger the property image update workflow'''
+              api_url = f'https://api.github.com/repos/{github_repo}/actions/workflows/update_property_image.yml/dispatches'
+              headers = {
+                  'Authorization': f'token {github_token}',
+                  'Accept': 'application/vnd.github.v3+json'
+              }
+              data = {'ref': 'main'}
+              
+              response = requests.post(api_url, headers=headers, json=data)
+              
+              if response.status_code == 204:
+                  print('✅ Successfully triggered property image update workflow')
+                  return True
+              else:
+                  print(f'❌ Failed to trigger workflow. Status: {response.status_code}')
+                  return False
+
+          print('=' * 70)
+          print('🔍 Property Image Updater Watchdog - Every 6 Hours Check')
+          print('=' * 70)
+          print(f'Current time: {datetime.now(timezone.utc).strftime(\"%Y-%m-%d %H:%M:%S UTC\")}')
+          print('')
+
+          try:
+              # Check task status (id=1: Property Image Updater)
+              result = supabase.table('scraping_progress').select('*').eq('id', 1).execute()
+              
+              if not result.data:
+                  print('ℹ️  No progress record found for Property Image Updater')
+                  print('✅ Will trigger workflow to start')
+                  trigger_workflow()
+                  exit(0)
+              
+              record = result.data[0]
+              status = record.get('status', 'idle')
+              updated_at = record.get('updated_at')
+              last_processed_id = record.get('last_processed_id')
+              
+              print(f'📊 Current Status:')
+              print(f'   - Status: {status}')
+              print(f'   - Updated: {updated_at}')
+              print(f'   - Last ID: {last_processed_id}')
+              print('')
+
+              # Decision logic
+              if status == 'idle':
+                  # Check if there's work to do
+                  print('ℹ️  Status is IDLE')
+                  print('ℹ️  Checking if there are properties without images...')
+                  
+                  # Quick check if there's work to do
+                  props_check = supabase.table('properties').select('id').is_('cover_image_url', 'null').limit(1).execute()
+                  
+                  if props_check.data and len(props_check.data) > 0:
+                      print('✅ Found properties without images, will trigger workflow')
+                      trigger_workflow()
+                  else:
+                      print('ℹ️  No properties found without images.')
+                      print('✅ Task appears complete, no action needed')
+                  
+              elif status == 'running':
+                  # Check if it's truly running or stalled
+                  if updated_at:
+                      # If updated_at is already a datetime (from shim/psycopg2), use it.
+                      if isinstance(updated_at, str):
+                          last_update = parser.parse(updated_at)
+                      else:
+                          last_update = updated_at
+                          
+                      now = datetime.now(timezone.utc)
+                      
+                      # Ensure last_update is timezone aware
+                      if last_update.tzinfo is None:
+                          last_update = last_update.replace(tzinfo=timezone.utc)
+                          
+                      time_diff = now - last_update
+                      
+                      if time_diff > timedelta(hours=1):
+                          print(f'⚠️  Status is RUNNING but inactive for {time_diff}')
+                          print('⚠️  Appears to be stalled, will reset and trigger')
+                          
+                          # Reset to idle
+                          supabase.table('scraping_progress').update({
+                              'status': 'idle',
+                              'updated_at': 'now()'
+                          }).eq('id', 1).execute()
+                          
+                          # Trigger workflow
+                          trigger_workflow()
+                      else:
+                          print(f'✅ Status is RUNNING and active ({time_diff} ago)')
+                          print('ℹ️  Another instance is working, no action needed')
+                  else:
+                      print('⚠️  Status is RUNNING but no timestamp')
+                      print('⚠️  Will reset and trigger')
+                      
+                      supabase.table('scraping_progress').update({
+                          'status': 'idle',
+                          'updated_at': 'now()'
+                      }).eq('id', 1).execute()
+                      
+                      trigger_workflow()
+                  
+              elif status == 'complete':
+                  print('✅ Status is COMPLETE')
+                  print('ℹ️  Task is finished, no action needed')
+                  
+              else:
+                  print(f'⚠️  Unknown status: {status}')
+                  print('ℹ️  No action taken')
+
+          except Exception as e:
+              print(f'❌ Error during watchdog check: {e}')
+              import traceback
+              print(traceback.format_exc())
+
+          print('')
+          print('=' * 70)
+          print('✅ Watchdog check completed')
+          print('=' * 70)
+          "

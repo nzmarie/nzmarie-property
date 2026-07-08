@@ -1,0 +1,100 @@
+name: RealEstate Scraper (Rent)
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_run:
+        description: "Force run? (Resets status to idle)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+
+    concurrency:
+      group: scrape-realestate-rent
+      cancel-in-progress: false
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      REALESTATE_URL: https://www.realestate.co.nz
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      PYTHONPATH: .
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Check and acquire lock
+        id: check_lock
+        env:
+          FORCE_RUN: ${{ inputs.force_run }}
+        run: |
+          FORCE_FLAG=""
+          if [ "$FORCE_RUN" = "true" ]; then FORCE_FLAG="--force"; fi
+          python database/scripts/gh_lock_manager.py --action check --task-id 4 $FORCE_FLAG
+
+      - name: Set status to running
+        if: steps.check_lock.outputs.should_run == 'true'
+        run: python database/scripts/gh_lock_manager.py --action running --task-id 4
+
+      - name: Run scraper (rent)
+        if: steps.check_lock.outputs.should_run == 'true'
+        run: python real_estate_rent.py --task_id 4
+
+
+      - name: Reset status on completion or failure
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        run: python database/scripts/gh_lock_manager.py --action reset --task-id 4
+
+      - name: Trigger next run if timed out (Breakpoint Resume)
+        if: success() && steps.check_lock.outputs.should_run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS=$(python -c "
+          import sys; sys.path.append('.')
+          from utils.database import db
+          rows = db.query('SELECT status FROM scraping_progress WHERE id = %s', (4,))
+          print(rows[0]['status'] if rows else 'unknown')
+          ")
+          
+          if [ "$STATUS" = "idle" ]; then
+            echo "Task 4 is 'idle' (timed out). Triggering next run to resume..."
+            curl -X POST -H "Accept: application/vnd.github.v3+json" -H "Authorization: token $GITHUB_TOKEN" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/real_estate_scraper_rent.yml/dispatches \
+            -d "{\"ref\":\"main\", \"inputs\": {\"force_run\": \"false\"}}"
+          elif [ "$STATUS" = "complete" ]; then
+            echo "Task 4 is 'complete'. Scraping cycle finished!"
+          else
+            echo "Task 4 is '$STATUS'. No auto-trigger performed."
+          fi
+
+      - name: Upload error screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-screenshots-rent-${{ github.run_number }}
+          path: screenshots/
+          retention-days: 7
