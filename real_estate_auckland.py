@@ -192,6 +192,28 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
         except Exception as e:
             logger.warning(f"Error extracting geo coordinates: {e}")
 
+        # 8. Cover Image and Gallery Images
+        try:
+            image_urls = page.evaluate("""
+                () => {
+                    const imgs = document.querySelectorAll('div[data-test="image"] > img');
+                    const urls = [];
+                    imgs.forEach(img => {
+                        const src = img.getAttribute('src') || '';
+                        if (src && !src.startsWith('data:') && src.includes('mediaserver.realestate.co.nz')) {
+                            const highRes = src.replace(/\.crop\.\d+x\d+/, '.crop.1200x685');
+                            urls.push(highRes);
+                        }
+                    });
+                    return urls;
+                }
+            """)
+            if image_urls:
+                data['cover_image_url'] = image_urls[0]
+                data['images'] = json.dumps(image_urls)
+        except Exception as e:
+            logger.warning(f"Error extracting images: {e}")
+
         return data
 
     except Exception as e:
