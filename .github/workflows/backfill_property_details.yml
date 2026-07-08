@@ -49,6 +49,12 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Run database migrations
+        run: |
+          python database/migrations/001_add_property_fingerprint_unique.py
+          python database/migrations/003_add_sale_status_and_valuations.py
+          python database/migrations/004_add_images_column.py
+
       - name: Run Backfill Mode
         run: |
           SUBURBS="${{ inputs.suburbs }}"
