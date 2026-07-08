@@ -94,6 +94,9 @@ jobs:
           echo "========================================="
           echo "🚀 Starting DISCOVERY mode"
           echo "========================================="
+          echo "Suburbs: $SUBURBS_VAL"
+          echo "Max runtime: 1.8 hours"
+          echo "========================================="
           
           python scrapers/property_value_engine.py \
             --mode discovery \
@@ -106,11 +109,18 @@ jobs:
           EXIT_CODE=$?
           
           if [ $EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "========================================="
             echo "❌ Discovery mode failed with exit code $EXIT_CODE"
+            echo "========================================="
             exit $EXIT_CODE
           fi
           
+          echo ""
+          echo "========================================="
           echo "✅ Discovery mode completed successfully"
+          echo "✅ Proceeding to backfill mode..."
+          echo "========================================="
 
       - name: Run Backfill Mode (after discovery or standalone)
         if: steps.check_lock.outputs.should_run == 'true' && (inputs.mode == 'discovery' || inputs.mode == 'backfill')
@@ -119,25 +129,35 @@ jobs:
           
           echo ""
           echo "========================================="
-          echo "� Starting BACKFILL mode"
+          echo "🔄 Starting BACKFILL mode"
+          echo "========================================="
+          echo "Suburbs: $SUBURBS_VAL"
+          echo "Max runtime: 1.8 hours"
           echo "========================================="
           
+          # Run backfill without task_id to avoid lock conflicts
+          # Use --force to skip lock check entirely
           python scrapers/property_value_engine.py \
             --mode backfill \
             --region auckland \
-            --task_id ${{ steps.task_id.outputs.task_id }} \
-            --max_runtime 1.8 \
             --suburbs "$SUBURBS_VAL" \
-            ${{ inputs.force_run && '--force' || '' }}
+            --max_runtime 1.8 \
+            --force
           
           EXIT_CODE=$?
           
           if [ $EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "========================================="
             echo "❌ Backfill mode failed with exit code $EXIT_CODE"
+            echo "========================================="
             exit $EXIT_CODE
           fi
           
+          echo ""
+          echo "========================================="
           echo "✅ Backfill mode completed successfully"
+          echo "========================================="
 
       - name: Run Refresh Mode
         if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'refresh'
@@ -146,6 +166,9 @@ jobs:
           
           echo "========================================="
           echo "🔄 Starting REFRESH mode"
+          echo "========================================="
+          echo "Suburbs: $SUBURBS_VAL"
+          echo "Max runtime: 1.8 hours"
           echo "========================================="
           
           python scrapers/property_value_engine.py \
@@ -159,16 +182,45 @@ jobs:
           EXIT_CODE=$?
           
           if [ $EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "========================================="
             echo "❌ Refresh mode failed with exit code $EXIT_CODE"
+            echo "========================================="
             exit $EXIT_CODE
           fi
           
+          echo ""
+          echo "========================================="
           echo "✅ Refresh mode completed successfully"
+          echo "========================================="
 
       - name: Reset status
         if: always() && steps.check_lock.outputs.should_run == 'true'
         run: |
           python database/scripts/gh_lock_manager.py --action reset --task-id ${{ steps.task_id.outputs.task_id }}
+
+      - name: Show completion summary
+        if: success() && (inputs.mode == 'discovery' || inputs.mode == 'backfill')
+        run: |
+          echo ""
+          echo "========================================="
+          echo "🎉 Workflow completed successfully!"
+          echo "========================================="
+          echo ""
+          echo "📊 What was done:"
+          if [ "${{ inputs.mode }}" == "discovery" ]; then
+            echo "   1. ✅ Discovery: Collected property addresses"
+            echo "   2. ✅ Backfill: Populated detailed data (images, beds, RV, etc.)"
+          else
+            echo "   ✅ Backfill: Populated detailed data (images, beds, RV, etc.)"
+          fi
+          echo ""
+          echo "🔍 Verify data:"
+          echo "   1. Check your frontend property cards"
+          echo "   2. Confirm images are displayed"
+          echo "   3. Confirm RV, bedrooms, bathrooms are filled"
+          echo ""
+          echo "========================================="
 
       - name: Upload Error Screenshots
         if: failure()
