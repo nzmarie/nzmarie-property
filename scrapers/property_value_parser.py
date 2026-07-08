@@ -410,9 +410,10 @@ class PropertyValueParser:
             if date_match:
                 result['date'] = date_match.group(1)
             else:
+                # If only year is found, set to January 1st of that year
                 year_match = re.search(r'(\d{4})', text)
                 if year_match:
-                    result['date'] = year_match.group(1)
+                    result['date'] = f"1 Jan {year_match.group(1)}"
         return result
 
     @staticmethod

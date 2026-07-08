@@ -5,6 +5,7 @@ import logging
 import sys
 import json
 import time
+import re
 
 sys.path.append(os.getcwd())
 
@@ -333,6 +334,28 @@ class PropertyValueEngine(BaseScraper):
                         logger.info(f"  [SIM] Beds: {data['bedrooms']}, Baths: {data['bathrooms']}, Year: {data['year_built']}")
                         continue
 
+                    # Convert last_sold_date to proper SQL DATE format or None
+                    last_sold_date_sql = None
+                    if data.get('last_sold_date'):
+                        try:
+                            from datetime import datetime
+                            # Try to parse common date formats
+                            date_str = data['last_sold_date']
+                            # Format: "5 Aug 2023" or "05 Aug 2023"
+                            if re.match(r'\d{1,2}\s+\w+\s+\d{4}', date_str):
+                                dt = datetime.strptime(date_str, "%d %b %Y")
+                                last_sold_date_sql = dt.strftime("%Y-%m-%d")
+                            # Format: "1 Jan 2020" (our fallback format for year-only)
+                            elif re.match(r'1\s+Jan\s+\d{4}', date_str):
+                                dt = datetime.strptime(date_str, "%d %b %Y")
+                                last_sold_date_sql = dt.strftime("%Y-%m-%d")
+                            # If it's just a year (shouldn't happen after our fix, but just in case)
+                            elif re.match(r'^\d{4}$', date_str):
+                                last_sold_date_sql = f"{date_str}-01-01"
+                        except Exception as e:
+                            logger.warning(f"Could not parse last_sold_date '{data.get('last_sold_date')}': {e}")
+                            last_sold_date_sql = None
+
                     update_sql = """
                         UPDATE properties
                         SET bedrooms = %s, bathrooms = %s, car_spaces = %s,
@@ -359,7 +382,7 @@ class PropertyValueEngine(BaseScraper):
                         json.dumps(data['images']),
                         data.get('description'),
                         data.get('estimated_value_low'), data.get('estimated_value_high'),
-                        data.get('last_sold_price'), data.get('last_sold_date'),
+                        data.get('last_sold_price'), last_sold_date_sql,
                         data.get('suburb_median_price'), data.get('suburb_median_rent'),
                         data.get('suburb_days_on_market'),
                         data.get('latitude'), data.get('longitude'),
