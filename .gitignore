@@ -12,6 +12,14 @@ venv/
 property_forecast_env/
 
 node_modules/
+package.json
+package-lock.json
+
+# Testing and documentation (local only)
+check-results.js
+trigger-test-action.md
+TEST_ACTION_GUIDE.md
+SCRAPER_FIX_SUMMARY.md
 
 # IDE & OS
 .vscode/
