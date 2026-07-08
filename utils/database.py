@@ -2,9 +2,13 @@ import os
 import urllib.parse
 import psycopg2
 import psycopg2.extras
-import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
+
+try:
+    import pandas as pd
+except ModuleNotFoundError:  # pragma: no cover - exercised in CI when pandas is missing
+    pd = None
 
 load_dotenv()
 
@@ -74,6 +78,8 @@ class DatabaseClient:
                 return None
 
     def read_df(self, table_or_sql):
+        if pd is None:
+            raise ModuleNotFoundError("pandas is required for read_df(). Please install pandas to use this helper.")
         return pd.read_sql(table_or_sql, self.conn_str)
 
     def execute(self, sql, params=None):
