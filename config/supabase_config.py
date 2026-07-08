@@ -440,28 +440,41 @@ def insert_real_estate_rent(address: str, status: str, latitude: float = None, l
 create_client = create_supabase_client
 Client = SupabaseShim
 
-def upsert_real_estate_detail(data: dict) -> bool:
+def _execute_upsert(table_name: str, data: dict) -> bool:
     try:
         if 'address' in data:
             data['address_fingerprint'] = get_canonical_address(data['address'])
         columns = list(data.keys())
         placeholders = ["%s"] * len(columns)
-        sql = f"UPSERT INTO real_estate ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
-        db.execute(sql, list(data.values()))
-        return True
+        insert_sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
+        try:
+            db.execute(insert_sql, list(data.values()))
+            return True
+        except Exception as insert_err:
+            err_msg = str(insert_err).lower()
+            if "unique constraint" in err_msg or "duplicate key" in err_msg:
+                fingerprint = data.get('address_fingerprint')
+                if fingerprint:
+                    update_data = {k: v for k, v in data.items() if k not in ('id', 'address_fingerprint')}
+                    set_clauses = []
+                    params = []
+                    for k, v in update_data.items():
+                        if k in ('latitude', 'longitude'):
+                            set_clauses.append(f"{k} = COALESCE(%s, {k})")
+                        else:
+                            set_clauses.append(f"{k} = %s")
+                        params.append(v)
+                    params.append(fingerprint)
+                    update_sql = f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE address_fingerprint = %s"
+                    db.execute(update_sql, params)
+                    return True
+            raise
     except Exception as e:
-        logger.error(f"Error upserting real_estate: {e}")
+        logger.error(f"Error upserting into {table_name}: {e}")
         return False
 
+def upsert_real_estate_detail(data: dict) -> bool:
+    return _execute_upsert("real_estate", data)
+
 def upsert_real_estate_rent_detail(data: dict) -> bool:
-    try:
-        if 'address' in data:
-            data['address_fingerprint'] = get_canonical_address(data['address'])
-        columns = list(data.keys())
-        placeholders = ["%s"] * len(columns)
-        sql = f"UPSERT INTO real_estate_rent ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
-        db.execute(sql, list(data.values()))
-        return True
-    except Exception as e:
-        logger.error(f"Error upserting real_estate_rent: {e}")
-        return False
+    return _execute_upsert("real_estate_rent", data)
