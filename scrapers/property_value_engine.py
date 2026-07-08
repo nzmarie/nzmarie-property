@@ -58,6 +58,11 @@ class PropertyValueEngine(BaseScraper):
                 await self.run_discovery()
             elif self.mode == "refresh":
                 await self.run_refresh()
+            
+            logger.info(f"✅ {self.mode.title()} mode completed successfully")
+        except Exception as e:
+            logger.error(f"❌ Fatal error in {self.mode} mode: {e}", exc_info=True)
+            raise
         finally:
             if self.task_id:
                 # We don't set to idle here if it's managed by the YAML always() block
@@ -223,9 +228,33 @@ class PropertyValueEngine(BaseScraper):
 
             properties_to_save = []
             for prop_path in property_links:
+                # Extract clean address from URL slug (remove postcode and property ID)
                 addr_slug = prop_path.strip('/').split('/')[-1].split('?')[0]
+                
+                # Remove the suburb/city/postcode/ID suffix to get just the street address
+                # Format: "street-address-suburb-city-postcode-propertyid"
+                # We want: "street-address"
+                parts = addr_slug.split('-')
+                
+                # Find where the address part ends (usually before the postcode which is 4 digits)
+                address_parts = []
+                for i, part in enumerate(parts):
+                    # Stop if we hit a 4-digit postcode
+                    if part.isdigit() and len(part) == 4:
+                        break
+                    # Stop if we hit the suburb name (case-insensitive match)
+                    if suburb_name and part.lower() in suburb_name.lower().split():
+                        break
+                    address_parts.append(part)
+                
+                # If we couldn't parse it properly, use first 3-5 parts as address
+                if len(address_parts) < 2:
+                    address_parts = parts[:min(5, len(parts))]
+                
+                clean_address = ' '.join(address_parts).title()
+                
                 properties_to_save.append({
-                    'address': addr_slug.replace('-', ' ').title(),
+                    'address': clean_address,
                     'property_url': self.base_url + prop_path,
                     'suburb': suburb_name,
                     'city': ta_name
