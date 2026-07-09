@@ -350,6 +350,11 @@ class PropertyValueEngine(BaseScraper):
                             return None
                         from datetime import datetime
                         s = str(date_str).strip()
+                        
+                        # If it's already ISO format, return as-is
+                        if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
+                            return s
+                        
                         for fmt in (
                             "%d %b %Y",   # "5 Aug 2023"  ← normal parser output
                             "%d %B %Y",   # "5 August 2023"
@@ -361,19 +366,16 @@ class PropertyValueEngine(BaseScraper):
                                 return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
                             except ValueError:
                                 continue
+                        
                         # bare year "2024"
                         if re.match(r'^\d{4}$', s):
                             return f"{s}-01-01"
-                        return None  # unknown — store NULL, not crash
+                        
+                        # Last resort: "Unknown" or other unparseable strings
+                        logger.warning(f"Could not parse date: {date_str}. Setting to NULL.")
+                        return None
 
                     last_sold_date_sql = _to_sql_date(data.get('last_sold_date'))
-
-                    # Validate last_sold_date format - reject if not None and not ISO format
-                    if last_sold_date_sql:
-                        # Must be YYYY-MM-DD format or None
-                        if not re.match(r'^\d{4}-\d{2}-\d{2}$', last_sold_date_sql):
-                            logger.warning(f"Invalid last_sold_date format for {prop['address']}: {last_sold_date_sql}. Setting to NULL.")
-                            last_sold_date_sql = None
 
                     update_sql = """
                         UPDATE properties
