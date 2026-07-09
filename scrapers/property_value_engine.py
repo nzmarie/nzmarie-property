@@ -124,7 +124,7 @@ class PropertyValueEngine(BaseScraper):
             VALUES (md5(random()::text || clock_timestamp()::text), %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (address_fingerprint) WHERE address_fingerprint IS NOT NULL DO UPDATE
             SET property_url = EXCLUDED.property_url
-            RETURNING address, (created_at >= CURRENT_TIMESTAMP - INTERVAL '1 second') as is_new
+            RETURNING address, suburb, (created_at >= CURRENT_TIMESTAMP - INTERVAL '1 second') as is_new
         """
         
         try:
@@ -132,7 +132,8 @@ class PropertyValueEngine(BaseScraper):
                 result = db.query(sql, params)
                 if result:
                     status = "[NEW]" if result[0]['is_new'] else "[UPD]"
-                    logger.info(f"  {status} {result[0]['address']}")
+                    sub = result[0].get('suburb')
+                    logger.info(f"  {status} {result[0]['address']}{', ' + sub if sub else ''}")
         except Exception as e:
             logger.error(f"Failed to process properties batch: {e}")
 
