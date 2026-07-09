@@ -138,7 +138,7 @@ class PropertyValueEngine(BaseScraper):
 
     async def run_discovery(self):
         logger.info(f"Starting Discovery Mode for region: {self.region}")
-        if self.force_run or self.suburbs_filter:
+        if self.force_run:
             state = {}
         else:
             state = await self.get_state() or {}

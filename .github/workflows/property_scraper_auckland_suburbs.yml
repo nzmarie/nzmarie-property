@@ -84,6 +84,7 @@ jobs:
         run: python database/scripts/gh_lock_manager.py --action running --task-id ${{ steps.task_id.outputs.task_id }}
 
       - name: Run Discovery Mode
+        id: discovery
         if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'discovery'
         run: |
           SUBURBS_VAL="${{ inputs.suburbs || 'Northcross,Oteha,Torbay,Fairview Heights,Waiake,Browns Bay,Pinehill,Rothesay Bay,Murrays Bay,Albany' }}"
@@ -92,35 +93,37 @@ jobs:
           echo "🚀 Starting DISCOVERY mode"
           echo "========================================="
           echo "Suburbs: $SUBURBS_VAL"
-          echo "Max runtime: 5.5 hours"
+          echo "Max runtime: 5 hours"
           echo "========================================="
           
           python scrapers/property_value_engine.py \
             --mode discovery \
             --region auckland \
             --task_id ${{ steps.task_id.outputs.task_id }} \
-            --max_runtime 5.5 \
+            --max_runtime 5 \
             --suburbs "$SUBURBS_VAL" \
             ${{ inputs.force_run && '--force' || '' }}
-          
-          EXIT_CODE=$?
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo ""
-            echo "========================================="
-            echo "❌ Discovery mode failed with exit code $EXIT_CODE"
-            echo "========================================="
-            exit $EXIT_CODE
-          fi
-          
-          echo ""
-          echo "========================================="
-          echo "✅ Discovery mode completed successfully"
-          echo "✅ Proceeding to backfill mode..."
-          echo "========================================="
+
+      - name: Check discovery completion
+        id: discovery_check
+        if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'discovery'
+        run: |
+          STATUS=$(python -c "
+          import sys, json; sys.path.append('.')
+          from utils.database import db
+          rows = db.query('SELECT status, last_processed_id FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
+          if rows:
+              print(rows[0]['status'])
+          else:
+              print('unknown')
+          ")
+          echo "Task status after discovery: $STATUS"
+          echo "discovery_status=$STATUS" >> $GITHUB_OUTPUT
 
       - name: Run Backfill Mode (after discovery or standalone)
-        if: steps.check_lock.outputs.should_run == 'true' && (inputs.mode == 'discovery' || inputs.mode == 'backfill')
+        if: |
+          steps.check_lock.outputs.should_run == 'true'
+          && (inputs.mode == 'backfill' || (inputs.mode == 'discovery' && steps.discovery_check.outputs.discovery_status == 'complete'))
         run: |
           SUBURBS_VAL="${{ inputs.suburbs || 'Northcross,Oteha,Torbay,Fairview Heights,Waiake,Browns Bay,Pinehill,Rothesay Bay,Murrays Bay,Albany' }}"
           
@@ -129,32 +132,16 @@ jobs:
           echo "🔄 Starting BACKFILL mode"
           echo "========================================="
           echo "Suburbs: $SUBURBS_VAL"
-          echo "Max runtime: 5.5 hours"
+          echo "Max runtime: 5 hours"
           echo "========================================="
           
-          # Run backfill without task_id to avoid lock conflicts
-          # Use --force to skip lock check entirely
           python scrapers/property_value_engine.py \
             --mode backfill \
             --region auckland \
+            --task_id ${{ steps.task_id.outputs.task_id }} \
             --suburbs "$SUBURBS_VAL" \
-            --max_runtime 5.5 \
+            --max_runtime 5 \
             --force
-          
-          EXIT_CODE=$?
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo ""
-            echo "========================================="
-            echo "❌ Backfill mode failed with exit code $EXIT_CODE"
-            echo "========================================="
-            exit $EXIT_CODE
-          fi
-          
-          echo ""
-          echo "========================================="
-          echo "✅ Backfill mode completed successfully"
-          echo "========================================="
 
       - name: Run Refresh Mode
         if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'refresh'
@@ -165,61 +152,65 @@ jobs:
           echo "🔄 Starting REFRESH mode"
           echo "========================================="
           echo "Suburbs: $SUBURBS_VAL"
-          echo "Max runtime: 5.5 hours"
+          echo "Max runtime: 5 hours"
           echo "========================================="
           
           python scrapers/property_value_engine.py \
             --mode refresh \
             --region auckland \
             --task_id ${{ steps.task_id.outputs.task_id }} \
-            --max_runtime 5.5 \
+            --max_runtime 5 \
             --suburbs "$SUBURBS_VAL" \
             ${{ inputs.force_run && '--force' || '' }}
-          
-          EXIT_CODE=$?
-          
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo ""
-            echo "========================================="
-            echo "❌ Refresh mode failed with exit code $EXIT_CODE"
-            echo "========================================="
-            exit $EXIT_CODE
-          fi
-          
-          echo ""
-          echo "========================================="
-          echo "✅ Refresh mode completed successfully"
-          echo "========================================="
 
       - name: Reset status
         if: always() && steps.check_lock.outputs.should_run == 'true'
         run: |
           python database/scripts/gh_lock_manager.py --action reset --task-id ${{ steps.task_id.outputs.task_id }}
 
-      - name: Trigger next run if timed out (Breakpoint Resume)
-        if: success() && steps.check_lock.outputs.should_run == 'true'
+      - name: Trigger next run if not complete (Breakpoint Resume)
+        if: always() && steps.check_lock.outputs.should_run == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          STATUS=$(python -c "
-          import sys; sys.path.append('.')
+          RESULT=$(python -c "
+          import sys, json; sys.path.append('.')
           from utils.database import db
-          rows = db.query('SELECT status FROM scraping_progress WHERE id = %s', (12,))
-          print(rows[0]['status'] if rows else 'unknown')
+          rows = db.query('SELECT status, last_processed_id FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
+          if not rows:
+              print('NO_RECORD')
+          else:
+              status = rows[0]['status']
+              state = rows[0].get('last_processed_id')
+              if status == 'complete':
+                  print('COMPLETE')
+              elif state:
+                  try:
+                      s = json.loads(state)
+                      if s.get('ta_idx', 0) > 0 or s.get('sub_idx', 0) > 0 or s.get('page_num', 1) > 1:
+                          print('HAS_PROGRESS')
+                      else:
+                          print('NO_PROGRESS')
+                  except:
+                      print('NO_PROGRESS')
+              else:
+                  print('NO_PROGRESS')
           ")
 
-          if [ "$STATUS" = "idle" ]; then
-            echo "Task 12 is 'idle' (timed out at 6 hours). Triggering next run to resume from breakpoint..."
+          echo "Resume check result: $RESULT"
+
+          if [ "$RESULT" = "COMPLETE" ]; then
+            echo "✅ Task ${{ steps.task_id.outputs.task_id }} is complete. Scraping cycle finished!"
+          elif [ "$RESULT" = "HAS_PROGRESS" ]; then
+            echo "🔄 Task has saved progress. Triggering next run to resume from breakpoint..."
             curl -X POST \
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: token $GITHUB_TOKEN" \
               https://api.github.com/repos/${{ github.repository }}/actions/workflows/property_scraper_auckland_suburbs.yml/dispatches \
               -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"${{ inputs.mode }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"force_run\":\"false\"}}"
             echo "✅ Next run triggered to continue from breakpoint"
-          elif [ "$STATUS" = "complete" ]; then
-            echo "Task 12 is 'complete'. Scraping cycle finished!"
           else
-            echo "Task 12 is '$STATUS'. No auto-trigger performed."
+            echo "Task has no saved progress. No auto-trigger performed."
           fi
 
       - name: Show completion summary

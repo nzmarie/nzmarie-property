@@ -13,18 +13,15 @@ on:
           - backfill
           - refresh
       suburbs:
-        description: "Suburbs to scrape (comma-separated, empty=all e.g. 'Northcross,Torbay,Beach Haven')"
+        description: "Suburbs to scrape (comma-separated, empty=all)"
         required: false
         default: ""
         type: string
       force_run:
-        description: "Force run? (Resets status to idle)"
+        description: "Force run? (Resets progress and starts fresh)"
         type: boolean
         required: false
         default: false
-
-  # schedule:
-  #   - cron: '0 */6 * * *'  # Disabled — manual trigger only
 
 permissions:
   contents: read
@@ -72,10 +69,9 @@ jobs:
       - name: Determine Task ID
         id: task_id
         run: |
-          MODE="${{ inputs.mode || 'discovery' }}"
           TASK_ID=10
           echo "task_id=$TASK_ID" >> $GITHUB_OUTPUT
-          echo "Assigned unified Task ID $TASK_ID for $MODE in auckland"
+          echo "Assigned Task ID $TASK_ID for auckland"
 
       - name: Check and acquire lock
         id: check_lock
@@ -90,64 +86,151 @@ jobs:
         if: steps.check_lock.outputs.should_run == 'true'
         run: python database/scripts/gh_lock_manager.py --action running --task-id ${{ steps.task_id.outputs.task_id }}
 
-      - name: Run Discovery / Backfill / Refresh
-        if: steps.check_lock.outputs.should_run == 'true'
+      - name: Run Discovery Mode
+        id: discovery
+        if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'discovery'
         run: |
-          MODE="${{ inputs.mode || 'discovery' }}"
           SUBURBS="${{ inputs.suburbs }}"
 
           echo "========================================="
-          echo "Starting $MODE mode"
+          echo "🚀 Starting DISCOVERY mode"
           echo "========================================="
           echo "Region: auckland"
           echo "Suburbs: ${SUBURBS:-all}"
-          echo "Max runtime: 5.2 hours"
+          echo "Max runtime: 5 hours"
           echo "========================================="
 
-          ARGS=(--mode "$MODE" --region auckland --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5.2)
+          ARGS=(--mode discovery --region auckland --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5)
           if [ "${{ inputs.force_run }}" = "true" ]; then ARGS+=(--force); fi
           if [ -n "$SUBURBS" ]; then ARGS+=(--suburbs "$SUBURBS"); fi
 
           python scrapers/property_value_engine.py "${ARGS[@]}"
 
-          EXIT_CODE=$?
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "$MODE mode failed with exit code $EXIT_CODE"
-            exit $EXIT_CODE
-          fi
-          echo "$MODE mode completed successfully"
+      - name: Check discovery completion
+        id: discovery_check
+        if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'discovery'
+        run: |
+          STATUS=$(python -c "
+          import sys, json; sys.path.append('.')
+          from utils.database import db
+          rows = db.query('SELECT status FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
+          print(rows[0]['status'] if rows else 'unknown')
+          ")
+          echo "Task status after discovery: $STATUS"
+          echo "discovery_status=$STATUS" >> $GITHUB_OUTPUT
 
-      - name: Run Backfill (auto after discovery)
-        if: steps.check_lock.outputs.should_run == 'true' && (inputs.mode == 'discovery' || inputs.mode == '')
+      - name: Run Backfill Mode (after discovery or standalone)
+        if: |
+          steps.check_lock.outputs.should_run == 'true'
+          && (inputs.mode == 'backfill' || (inputs.mode == 'discovery' && steps.discovery_check.outputs.discovery_status == 'complete'))
         run: |
           SUBURBS="${{ inputs.suburbs }}"
 
+          echo ""
           echo "========================================="
-          echo "Starting BACKFILL mode"
+          echo "🔄 Starting BACKFILL mode"
           echo "========================================="
           echo "Region: auckland"
           echo "Suburbs: ${SUBURBS:-all}"
-          echo "Max runtime: 5.2 hours"
+          echo "Max runtime: 5 hours"
           echo "========================================="
 
-          BACKFILL_ARGS=(--mode backfill --region auckland --max_runtime 5.2 --force)
+          BACKFILL_ARGS=(--mode backfill --region auckland --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5 --force)
           if [ -n "$SUBURBS" ]; then BACKFILL_ARGS+=(--suburbs "$SUBURBS"); fi
 
           python scrapers/property_value_engine.py "${BACKFILL_ARGS[@]}"
 
-          EXIT_CODE=$?
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "Backfill mode failed with exit code $EXIT_CODE"
-            exit $EXIT_CODE
-          fi
-          echo "Backfill mode completed successfully"
+      - name: Run Refresh Mode
+        if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'refresh'
+        run: |
+          SUBURBS="${{ inputs.suburbs }}"
 
-      - name: Reset status on completion or failure
+          echo "========================================="
+          echo "🔄 Starting REFRESH mode"
+          echo "========================================="
+          echo "Region: auckland"
+          echo "Suburbs: ${SUBURBS:-all}"
+          echo "Max runtime: 5 hours"
+          echo "========================================="
+
+          ARGS=(--mode refresh --region auckland --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5)
+          if [ "${{ inputs.force_run }}" = "true" ]; then ARGS+=(--force); fi
+          if [ -n "$SUBURBS" ]; then ARGS+=(--suburbs "$SUBURBS"); fi
+
+          python scrapers/property_value_engine.py "${ARGS[@]}"
+
+      - name: Reset status
         if: always() && steps.check_lock.outputs.should_run == 'true'
         run: |
           python database/scripts/gh_lock_manager.py --action reset --task-id ${{ steps.task_id.outputs.task_id }}
 
+      - name: Trigger next run if not complete (Breakpoint Resume)
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RESULT=$(python -c "
+          import sys, json; sys.path.append('.')
+          from utils.database import db
+          rows = db.query('SELECT status, last_processed_id FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
+          if not rows:
+              print('NO_RECORD')
+          else:
+              status = rows[0]['status']
+              state = rows[0].get('last_processed_id')
+              if status == 'complete':
+                  print('COMPLETE')
+              elif state:
+                  try:
+                      s = json.loads(state)
+                      if s.get('ta_idx', 0) > 0 or s.get('sub_idx', 0) > 0 or s.get('page_num', 1) > 1:
+                          print('HAS_PROGRESS')
+                      else:
+                          print('NO_PROGRESS')
+                  except:
+                      print('NO_PROGRESS')
+              else:
+                  print('NO_PROGRESS')
+          ")
 
+          echo "Resume check result: $RESULT"
+
+          if [ "$RESULT" = "COMPLETE" ]; then
+            echo "✅ Task ${{ steps.task_id.outputs.task_id }} is complete. Scraping cycle finished!"
+          elif [ "$RESULT" = "HAS_PROGRESS" ]; then
+            echo "🔄 Task has saved progress. Triggering next run to resume from breakpoint..."
+            curl -X POST \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              https://api.github.com/repos/${{ github.repository }}/actions/workflows/property_scraper_auckland.yml/dispatches \
+              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"${{ inputs.mode }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"force_run\":\"false\"}}"
+            echo "✅ Next run triggered to continue from breakpoint"
+          else
+            echo "Task has no saved progress. No auto-trigger performed."
+          fi
+
+      - name: Show completion summary
+        if: success() && (inputs.mode == 'discovery' || inputs.mode == 'backfill')
+        run: |
+          echo ""
+          echo "========================================="
+          echo "🎉 Workflow completed successfully!"
+          echo "========================================="
+          echo ""
+          echo "📊 What was done:"
+          if [ "${{ inputs.mode }}" == "discovery" ]; then
+            echo "   1. ✅ Discovery: Collected property addresses"
+            echo "   2. ✅ Backfill: Populated detailed data (images, beds, RV, etc.)"
+          else
+            echo "   ✅ Backfill: Populated detailed data (images, beds, RV, etc.)"
+          fi
+          echo ""
+          echo "🔍 Verify data:"
+          echo "   1. Check your frontend property cards"
+          echo "   2. Confirm images are displayed"
+          echo "   3. Confirm RV, bedrooms, bathrooms are filled"
+          echo ""
+          echo "========================================="
 
       - name: Upload Error Screenshots
         if: failure()
