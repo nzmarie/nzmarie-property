@@ -58,10 +58,6 @@ jobs:
           python -m pip install -r requirements.txt
           python -m playwright install --with-deps chromium
 
-      - name: Apply database schema
-        run: |
-          python database/scripts/apply_schema.py
-
       - name: Run database migrations
         run: |
           python database/scripts/run_migrations.py
