@@ -165,7 +165,24 @@ class PropertyValueParser:
                     dt = datetime.strptime(contract_date, "%Y-%m-%d")
                     data["last_sold_date"] = dt.strftime("%d %b %Y").lstrip('0')
                 except Exception:
-                    data["last_sold_date"] = contract_date
+                    # Try other common formats before falling back
+                    parsed = False
+                    for fmt in ("%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y", "%Y-%m", "%Y/%m"):
+                        try:
+                            dt = datetime.strptime(contract_date, fmt)
+                            data["last_sold_date"] = dt.strftime("%d %b %Y").lstrip('0')
+                            parsed = True
+                            break
+                        except Exception:
+                            continue
+                    if not parsed:
+                        # Last resort: if it looks like a bare year, make Jan 1
+                        year_m = re.match(r'^(\d{4})$', str(contract_date).strip())
+                        if year_m:
+                            data["last_sold_date"] = f"1 Jan {year_m.group(1)}"
+                        else:
+                            # Unknown format — skip rather than storing garbage
+                            data["last_sold_date"] = None
 
             data["latitude"] = location.get("latitude")
             data["longitude"] = location.get("longitude")
