@@ -1,0 +1,173 @@
+name: Backfill Property Details Suburbs
+
+on:
+  workflow_dispatch:
+    inputs:
+      suburbs:
+        description: "Suburbs to backfill (comma-separated, or 'all' for entire database)"
+        required: true
+        default: "Northcross"
+        type: string
+      region:
+        description: "Region to backfill"
+        required: false
+        default: "auckland"
+        type: choice
+        options:
+          - auckland
+          - wellington
+      force_run:
+        description: "Force run? (Resets progress and starts fresh)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 660
+
+    concurrency:
+      group: backfill-property-details-suburbs-${{ inputs.region || 'auckland' }}
+      cancel-in-progress: false
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PROPERTY_VALUE_BASE_URL: ${{ secrets.PROPERTY_VALUE_BASE_URL }}
+      PYTHONPATH: .
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run database migrations
+        run: |
+          python database/scripts/run_migrations.py
+
+      - name: Determine Task ID
+        id: task_id
+        run: |
+          if [ "${{ inputs.region || 'auckland' }}" = "wellington" ]; then
+            TASK_ID=17
+          else
+            TASK_ID=16
+          fi
+          echo "task_id=$TASK_ID" >> $GITHUB_OUTPUT
+          echo "Assigned Task ID $TASK_ID for ${{ inputs.region || 'auckland' }}"
+
+      - name: Check and acquire lock
+        id: check_lock
+        env:
+          FORCE_RUN: ${{ inputs.force_run }}
+        run: |
+          FORCE_FLAG=""
+          if [ "$FORCE_RUN" = "true" ]; then FORCE_FLAG="--force"; fi
+          python database/scripts/gh_lock_manager.py --action check --task-id ${{ steps.task_id.outputs.task_id }} $FORCE_FLAG
+
+      - name: Set status to running
+        if: steps.check_lock.outputs.should_run == 'true'
+        run: python database/scripts/gh_lock_manager.py --action running --task-id ${{ steps.task_id.outputs.task_id }}
+
+      - name: Run Backfill Mode
+        if: steps.check_lock.outputs.should_run == 'true'
+        run: |
+          SUBURBS="${{ inputs.suburbs }}"
+          REGION="${{ inputs.region || 'auckland' }}"
+          MAX_RUNTIME="5.5"
+
+          echo "========================================="
+          echo "🔄 Starting BACKFILL Suburbs mode"
+          echo "========================================="
+          echo "Region:      $REGION"
+          echo "Suburbs:     $SUBURBS"
+          echo "Max runtime: ${MAX_RUNTIME} hours"
+          echo "Fills:       bedrooms, bathrooms, images, description, RV, sold price, etc."
+          echo "========================================="
+
+          ARGS=(--mode backfill --region "$REGION" --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime "$MAX_RUNTIME" --force)
+          if [ "$SUBURBS" != "all" ] && [ -n "$SUBURBS" ]; then
+            ARGS+=(--suburbs "$SUBURBS")
+          fi
+
+          python scrapers/property_value_engine.py "${ARGS[@]}"
+
+      - name: Reset status
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        run: |
+          python database/scripts/gh_lock_manager.py --action reset --task-id ${{ steps.task_id.outputs.task_id }}
+
+      - name: Trigger next run if not complete (Breakpoint Resume)
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS=$(python -c "
+          import sys; sys.path.append('.')
+          from utils.database import db
+          rows = db.query('SELECT status FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
+          print(rows[0]['status'] if rows else 'unknown')
+          ")
+
+          echo "Task status after run: $STATUS"
+
+          if [ "$STATUS" = "idle" ]; then
+            echo "🔄 Backfill not finished. Triggering next run to resume..."
+            curl -X POST \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              https://api.github.com/repos/${{ github.repository }}/actions/workflows/backfill_property_details_suburbs.yml/dispatches \
+              -d "{\"ref\":\"main\",\"inputs\":{\"suburbs\":\"${{ inputs.suburbs }}\",\"region\":\"${{ inputs.region }}\",\"force_run\":\"false\"}}"
+            echo "✅ Next run triggered to continue from breakpoint"
+          elif [ "$STATUS" = "complete" ]; then
+            echo "✅ Backfill is complete. Scraping cycle finished!"
+          else
+            echo "Task has status '$STATUS'. No auto-trigger performed."
+          fi
+
+      - name: Show completion summary
+        if: success() && steps.check_lock.outputs.should_run == 'true'
+        run: |
+          echo ""
+          echo "========================================="
+          echo "🎉 Backfill complete!"
+          echo "========================================="
+          echo ""
+          echo "Fields populated:"
+          echo "  ✅ cover_image_url  (property photo)"
+          echo "  ✅ images           (all photos JSONB)"
+          echo "  ✅ description      (story-content paragraphs)"
+          echo "  ✅ bedrooms / bathrooms / car_spaces"
+          echo "  ✅ floor_size / land_area"
+          echo "  ✅ capital_value / land_value / improvement_value"
+          echo "  ✅ last_sold_price / last_sold_date"
+          echo "  ✅ estimated_value_low / high"
+          echo "  ✅ latitude / longitude"
+          echo ""
+          echo "Verify: check frontend property cards for images and data."
+          echo "========================================="
+
+      - name: Upload Error Screenshots
+        if: failure() && steps.check_lock.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-suburbs-error-screenshots
+          path: screenshots/
+          retention-days: 7
+          if-no-files-found: warn

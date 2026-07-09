@@ -75,6 +75,21 @@ class TestWorkflowFiles(unittest.TestCase):
         resume_step = next(s for s in steps if s.get("name", "").startswith("Trigger next run"))
         self.assertIn("backfill_property_details.yml/dispatches", resume_step["run"])
 
+    def test_backfill_property_details_suburbs(self):
+        path = os.path.join(self.workflows_dir, "backfill_property_details_suburbs.yml")
+        self.assertTrue(os.path.exists(path))
+        with open(path, "r", encoding="utf-8") as f:
+            content = yaml.safe_load(f)
+
+        self.assertEqual("backfill-property-details-suburbs-${{ inputs.region || 'auckland' }}", content["jobs"]["backfill"]["concurrency"]["group"])
+
+        steps = content["jobs"]["backfill"]["steps"]
+        task_id_step = next(s for s in steps if s.get("id") == "task_id")
+        self.assertIn("TASK_ID=17", task_id_step["run"])
+
+        resume_step = next(s for s in steps if s.get("name", "").startswith("Trigger next run"))
+        self.assertIn("backfill_property_details_suburbs.yml/dispatches", resume_step["run"])
+
     def test_master_scheduler_exists(self):
         path = os.path.join(self.workflows_dir, "master_scheduler.yml")
         self.assertTrue(os.path.exists(path))
