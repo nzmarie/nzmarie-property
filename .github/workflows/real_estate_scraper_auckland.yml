@@ -4,12 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       force_run:
-        description: "Force run? (Resets status to idle, preserves page progress)"
+        description: "Force run? (skip lock check, preserve page progress)"
         required: false
         type: boolean
         default: false
       reset_progress:
-        description: "Full reset? (Resets page to 0 - use to backfill new fields)"
+        description: "Reset page progress to 0? (re-scrape from page 1)"
+        required: false
+        type: boolean
+        default: false
+      delete_existing:
+        description: "Delete ALL existing real_estate records before scraping? (full re-scrape)"
         required: false
         type: boolean
         default: false
@@ -51,9 +56,26 @@ jobs:
           pip install -r requirements.txt
           playwright install --with-deps chromium
 
+      - name: Run database migrations
+        run: |
+          python database/migrations/006_add_real_estate_property_type.py
+
+      - name: Delete existing real_estate records (full re-scrape)
+        if: inputs.delete_existing == true
+        run: |
+          echo "🗑️  Deleting all existing real_estate records..."
+          python -c "
+          import sys; sys.path.append('.')
+          from utils.database import db
+          result = db.execute('DELETE FROM real_estate')
+          print('✅ Deleted all real_estate records. Starting fresh.')
+          "
+
       - name: Full progress reset (re-scrape from page 0)
-        if: inputs.reset_progress == true
-        run: python database/scripts/gh_lock_manager.py --action reset-progress --task-id 2
+        if: inputs.reset_progress == true || inputs.delete_existing == true
+        run: |
+          echo "🔄 Resetting page progress to 0..."
+          python database/scripts/gh_lock_manager.py --action reset-progress --task-id 2
 
       - name: Check and acquire lock
         id: check_lock
@@ -87,12 +109,14 @@ jobs:
           rows = db.query('SELECT status FROM scraping_progress WHERE id = %s', (2,))
           print(rows[0]['status'] if rows else 'unknown')
           ")
-          
+
           if [ "$STATUS" = "idle" ]; then
             echo "Task 2 is 'idle' (timed out). Triggering next run to resume..."
-            curl -X POST -H "Accept: application/vnd.github.v3+json" -H "Authorization: token $GITHUB_TOKEN" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/real_estate_scraper_auckland.yml/dispatches \
-            -d "{\"ref\":\"main\", \"inputs\": {\"force_run\": \"false\", \"reset_progress\": \"false\"}}"
+            curl -X POST \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              https://api.github.com/repos/${{ github.repository }}/actions/workflows/real_estate_scraper_auckland.yml/dispatches \
+              -d '{"ref":"main","inputs":{"force_run":"false","reset_progress":"false","delete_existing":"false"}}'
           elif [ "$STATUS" = "complete" ]; then
             echo "Task 2 is 'complete'. Scraping cycle finished!"
           else

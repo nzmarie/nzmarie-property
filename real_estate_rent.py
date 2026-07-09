@@ -432,14 +432,21 @@ def scrape_rent_property_detail(page, relative_url):
             features = page.evaluate("""
                 () => {
                     const results = {};
-                    const iconGroups = document.querySelectorAll('div[data-test="features-icons"]');
-                    iconGroups.forEach(group => {
-                        const svg = group.querySelector('svg');
-                        const label = svg ? (svg.getAttribute('aria-labelledby') || '') : '';
-                        const span = group.querySelector('span');
-                        if (label && span) {
-                            if (label.includes('Bedroom')) results['bedrooms'] = span.innerText;
-                            if (label.includes('Bathroom')) results['bathrooms'] = span.innerText;
+                    const container = document.querySelector('div[data-test="features-icons"]');
+                    if (!container) return results;
+                    const items = container.querySelectorAll(':scope > div');
+                    items.forEach(item => {
+                        const titleEl = item.querySelector('svg title');
+                        const span = item.querySelector('span');
+                        if (!titleEl || !span) return;
+                        const label = titleEl.textContent.trim();
+                        const value = span.textContent.trim();
+                        if (label === 'Bedroom')    results['bedrooms']   = value;
+                        if (label === 'Bathroom')   results['bathrooms']  = value;
+                        if (label === 'Floor area') results['floor_area'] = value;
+                        if (label === 'Land area')  results['land_area']  = value;
+                        if (['Apartment','House','Townhouse','Unit','Section','Lifestyle','Rural'].includes(label)) {
+                            results['property_type'] = label;
                         }
                     });
                     return results;
@@ -451,6 +458,17 @@ def scrape_rent_property_detail(page, relative_url):
             if features.get('bathrooms'):
                 m = re.search(r'\d+', features['bathrooms'])
                 if m: data['bathroom_count'] = int(m.group())
+            if features.get('floor_area'):
+                m = re.search(r'([\d,.]+)', features['floor_area'])
+                if m: data['floor_area'] = int(float(m.group(1).replace(',', '')))
+            if features.get('land_area'):
+                val = features['land_area']
+                m = re.search(r'([\d,.]+)', val)
+                if m:
+                    num = float(m.group(1).replace(',', ''))
+                    data['land_area'] = int(num * 10000) if 'ha' in val.lower() else int(num)
+            if features.get('property_type'):
+                data['property_type'] = features['property_type']
         except Exception:
             pass
 

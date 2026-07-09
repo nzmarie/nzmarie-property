@@ -104,30 +104,32 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
         except:
             pass
 
-        # 5. Bedrooms, Bathrooms, Area
+        # 5. Bedrooms, Bathrooms, Area, Property Type
         try:
-            # Try specific data-test attributes first (often in tiles/similar)
-            bed_el = page.locator('[data-test="bedroom"]').first
-            if bed_el.is_visible():
-                val = bed_el.inner_text().strip()
-                num_match = re.search(r'\d+', val)
-                if num_match:
-                    data['bedroom_count'] = int(num_match.group())
-
-            # Land and Floor area often in features-icons
+            # Parse features-icons: each feature is a flex child div containing an svg+title and a span
+            # HTML structure: div[data-test="features-icons"] > div.flex.items-center > svg > title + span
             features = page.evaluate("""
                 () => {
                     const results = {};
-                    const iconGroups = document.querySelectorAll('div[data-test="features-icons"]');
-                    iconGroups.forEach(group => {
-                        const svg = group.querySelector('svg');
-                        const label = svg ? (svg.getAttribute('aria-labelledby') || '') : '';
-                        const span = group.querySelector('span');
-                        if (label && span) {
-                            if (label.includes('Land area')) results['land_area'] = span.innerText;
-                            if (label.includes('Floor area')) results['floor_area'] = span.innerText;
-                            if (label.includes('Bedroom')) results['bedrooms'] = span.innerText;
-                            if (label.includes('Bathroom')) results['bathrooms'] = span.innerText;
+                    const container = document.querySelector('div[data-test="features-icons"]');
+                    if (!container) return results;
+                    // Each feature item is a direct flex child
+                    const items = container.querySelectorAll(':scope > div');
+                    items.forEach(item => {
+                        const titleEl = item.querySelector('svg title');
+                        const span = item.querySelector('span');
+                        if (!titleEl || !span) return;
+                        const label = titleEl.textContent.trim();
+                        const value = span.textContent.trim();
+                        if (label === 'Bedroom')    results['bedrooms']      = value;
+                        if (label === 'Bathroom')   results['bathrooms']     = value;
+                        if (label === 'Floor area') results['floor_area']    = value;
+                        if (label === 'Land area')  results['land_area']     = value;
+                        if (label === 'Title type') results['title_type']    = value;
+                        // Property type is the first icon (Apartment, House, etc.)
+                        if (['Apartment','House','Townhouse','Unit','Section','Lifestyle','Rural',
+                             'Commercial','Office','Retail','Industrial'].includes(label)) {
+                            results['property_type'] = label;
                         }
                     });
                     return results;
@@ -135,32 +137,28 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
             """)
             
             if features.get('bedrooms') and not data.get('bedroom_count'):
-                val = features['bedrooms']
-                num_match = re.search(r'\d+', val)
-                if num_match:
-                    data['bedroom_count'] = int(num_match.group())
-            
+                m = re.search(r'\d+', features['bedrooms'])
+                if m: data['bedroom_count'] = int(m.group())
+
             if features.get('bathrooms') and not data.get('bathroom_count'):
-                val = features['bathrooms']
-                num_match = re.search(r'\d+', val)
-                if num_match:
-                    data['bathroom_count'] = int(num_match.group())
+                m = re.search(r'\d+', features['bathrooms'])
+                if m: data['bathroom_count'] = int(m.group())
 
             if features.get('land_area'):
                 val = features['land_area']
-                num_match = re.search(r'([\d,.]+)', val)
-                if num_match:
-                    num = float(num_match.group(1).replace(',', ''))
-                    if 'ha' in val.lower():
-                        data['land_area'] = int(num * 10000)
-                    else:
-                        data['land_area'] = int(num)
+                m = re.search(r'([\d,.]+)', val)
+                if m:
+                    num = float(m.group(1).replace(',', ''))
+                    data['land_area'] = int(num * 10000) if 'ha' in val.lower() else int(num)
 
             if features.get('floor_area'):
                 val = features['floor_area']
-                num_match = re.search(r'([\d,.]+)', val)
-                if num_match:
-                    data['floor_area'] = int(float(num_match.group(1).replace(',', '')))
+                m = re.search(r'([\d,.]+)', val)
+                if m: data['floor_area'] = int(float(m.group(1).replace(',', '')))
+
+            if features.get('property_type'):
+                data['property_type'] = features['property_type']
+
         except Exception as e:
             logger.warning(f"Error extracting features: {e}")
 
