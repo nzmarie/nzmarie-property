@@ -377,6 +377,7 @@ class PropertyValueEngine(BaseScraper):
 
                     last_sold_date_sql = _to_sql_date(data.get('last_sold_date'))
 
+                    # Try to update with last_sold_date first
                     update_sql = """
                         UPDATE properties
                         SET bedrooms = %s, bathrooms = %s, car_spaces = %s,
@@ -393,23 +394,64 @@ class PropertyValueEngine(BaseScraper):
                             cover_image_url = %s
                         WHERE id = %s
                     """
-                    db.execute(update_sql, (
-                        data['bedrooms'], data['bathrooms'], data.get('car_spaces'),
-                        str(data['floor_area']) if data['floor_area'] else None,
-                        data['land_area'],
-                        data['year_built'], data.get('property_type'),
-                        data.get('capital_value'), data.get('land_value'),
-                        data.get('improvement_value'),
-                        json.dumps(data['images']),
-                        data.get('description'),
-                        data.get('estimated_value_low'), data.get('estimated_value_high'),
-                        data.get('last_sold_price'), last_sold_date_sql,
-                        data.get('suburb_median_price'), data.get('suburb_median_rent'),
-                        data.get('suburb_days_on_market'),
-                        data.get('latitude'), data.get('longitude'),
-                        data['images'][0] if data['images'] else None,
-                        prop['id']
-                    ))
+                    
+                    try:
+                        db.execute(update_sql, (
+                            data['bedrooms'], data['bathrooms'], data.get('car_spaces'),
+                            str(data['floor_area']) if data['floor_area'] else None,
+                            data['land_area'],
+                            data['year_built'], data.get('property_type'),
+                            data.get('capital_value'), data.get('land_value'),
+                            data.get('improvement_value'),
+                            json.dumps(data['images']),
+                            data.get('description'),
+                            data.get('estimated_value_low'), data.get('estimated_value_high'),
+                            data.get('last_sold_price'), last_sold_date_sql,
+                            data.get('suburb_median_price'), data.get('suburb_median_rent'),
+                            data.get('suburb_days_on_market'),
+                            data.get('latitude'), data.get('longitude'),
+                            data['images'][0] if data['images'] else None,
+                            prop['id']
+                        ))
+                    except Exception as date_error:
+                        # If date parsing fails, retry without last_sold_date
+                        if "parsing as type date" in str(date_error):
+                            logger.warning(f"Date parsing error for {prop['address']}. Updating without last_sold_date.")
+                            update_sql_no_date = """
+                                UPDATE properties
+                                SET bedrooms = %s, bathrooms = %s, car_spaces = %s,
+                                    floor_size = %s, land_area_numeric = %s,
+                                    year_built = %s, property_type = %s,
+                                    capital_value = %s, land_value = %s,
+                                    improvement_value = %s,
+                                    images = %s, description = %s,
+                                    estimated_value_low = %s, estimated_value_high = %s,
+                                    last_sold_price = %s,
+                                    suburb_median_price = %s, suburb_median_rent = %s,
+                                    suburb_days_on_market = %s,
+                                    latitude = %s, longitude = %s,
+                                    cover_image_url = %s
+                                WHERE id = %s
+                            """
+                            db.execute(update_sql_no_date, (
+                                data['bedrooms'], data['bathrooms'], data.get('car_spaces'),
+                                str(data['floor_area']) if data['floor_area'] else None,
+                                data['land_area'],
+                                data['year_built'], data.get('property_type'),
+                                data.get('capital_value'), data.get('land_value'),
+                                data.get('improvement_value'),
+                                json.dumps(data['images']),
+                                data.get('description'),
+                                data.get('estimated_value_low'), data.get('estimated_value_high'),
+                                data.get('last_sold_price'),
+                                data.get('suburb_median_price'), data.get('suburb_median_rent'),
+                                data.get('suburb_days_on_market'),
+                                data.get('latitude'), data.get('longitude'),
+                                data['images'][0] if data['images'] else None,
+                                prop['id']
+                            ))
+                        else:
+                            raise
 
                     # Save history events
                     if data.get('history'):
