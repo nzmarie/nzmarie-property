@@ -23,8 +23,8 @@ on:
         required: false
         default: false
 
-  schedule:
-    - cron: '0 */6 * * *'
+  # schedule:
+  #   - cron: '0 */6 * * *'  # Disabled — manual trigger only
 
 permissions:
   contents: read

@@ -1,8 +1,8 @@
 name: Monthly RealEstate Scraper
 
 on:
-  schedule:
-    - cron: "0 2 1 * *"
+  # schedule:
+  #   - cron: "0 2 1 * *"  # Disabled — manual trigger only
   workflow_dispatch:
     inputs:
       force_run:

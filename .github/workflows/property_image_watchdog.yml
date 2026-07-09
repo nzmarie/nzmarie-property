@@ -1,8 +1,8 @@
 name: Property Image Updater - Watchdog
 
 on:
-  schedule:
-    - cron: "0 */6 * * *" # Every 6 hours - check if task needs to resume
+  # schedule:
+  #   - cron: "0 */6 * * *"  # Disabled — manual trigger only
   workflow_dispatch: # Allow manual trigger
 
 permissions:
