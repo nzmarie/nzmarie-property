@@ -143,5 +143,13 @@ class TestPropertyValueParser(unittest.TestCase):
             "browns bay"
         )
 
+    def test_to_sql_date(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        self.assertEqual(PropertyValueEngine._to_sql_date("2024"), "2024-01-01")
+        self.assertEqual(PropertyValueEngine._to_sql_date("5 Aug 2023"), "2023-08-05")
+        self.assertEqual(PropertyValueEngine._to_sql_date("Unknown"), None)
+        self.assertEqual(PropertyValueEngine._to_sql_date(""), None)
+        self.assertEqual(PropertyValueEngine._to_sql_date(None), None)
+
 if __name__ == '__main__':
     unittest.main()

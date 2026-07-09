@@ -343,39 +343,7 @@ class PropertyValueEngine(BaseScraper):
                         logger.info(f"  [SIM] Beds: {data['bedrooms']}, Baths: {data['bathrooms']}, Year: {data['year_built']}")
                         continue
 
-                    # Convert last_sold_date to a SQL DATE string (YYYY-MM-DD) or None.
-                    # Handles any format that survived parser normalization.
-                    def _to_sql_date(date_str):
-                        if not date_str:
-                            return None
-                        from datetime import datetime
-                        s = str(date_str).strip()
-                        
-                        # If it's already ISO format, return as-is
-                        if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
-                            return s
-                        
-                        for fmt in (
-                            "%d %b %Y",   # "5 Aug 2023"  ← normal parser output
-                            "%d %B %Y",   # "5 August 2023"
-                            "%Y-%m-%d",   # "2023-08-05"  ← ISO
-                            "%d/%m/%Y",   # "05/08/2023"
-                            "%Y/%m/%d",   # "2023/08/05"
-                        ):
-                            try:
-                                return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
-                            except ValueError:
-                                continue
-                        
-                        # bare year "2024"
-                        if re.match(r'^\d{4}$', s):
-                            return f"{s}-01-01"
-                        
-                        # Last resort: "Unknown" or other unparseable strings
-                        logger.warning(f"Could not parse date: {date_str}. Setting to NULL.")
-                        return None
-
-                    last_sold_date_sql = _to_sql_date(data.get('last_sold_date'))
+                    last_sold_date_sql = self._to_sql_date(data.get('last_sold_date'))
 
                     # Try to update with last_sold_date first
                     update_sql = """
@@ -453,7 +421,6 @@ class PropertyValueEngine(BaseScraper):
                         else:
                             raise
 
-                    # Save history events
                     if data.get('history'):
                         history_sql = """
                             INSERT INTO property_history
@@ -463,8 +430,9 @@ class PropertyValueEngine(BaseScraper):
                         """
                         history_params = []
                         for ev in data['history']:
-                            history_params.append([prop['id'], ev['event_date'], ev['event_description'], ev['event_interval']])
-                        
+                            event_date_sql = self._to_sql_date(ev['event_date'])
+                            if event_date_sql:
+                                history_params.append([prop['id'], event_date_sql, ev['event_description'], ev['event_interval']])
                         if history_params:
                             db.execute_batch(history_sql, history_params)
 
@@ -474,6 +442,30 @@ class PropertyValueEngine(BaseScraper):
                     logger.error(f"Failed to backfill {prop['address']}: {e}")
                 finally:
                     await page.close()
+
+    @staticmethod
+    def _to_sql_date(date_str):
+        if not date_str:
+            return None
+        from datetime import datetime
+        s = str(date_str).strip()
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
+            return s
+        for fmt in (
+            "%d %b %Y",
+            "%d %B %Y",
+            "%Y-%m-%d",
+            "%d/%m/%Y",
+            "%Y/%m/%d",
+        ):
+            try:
+                return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        if re.match(r'^\d{4}$', s):
+            return f"{s}-01-01"
+        logger.warning(f"Could not parse date: {date_str}. Setting to NULL.")
+        return None
 
     @staticmethod
     def _format_address(address_parts):
