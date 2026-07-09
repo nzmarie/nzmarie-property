@@ -67,6 +67,7 @@ jobs:
           python database/migrations/003_add_sale_status_and_valuations.py
           python database/migrations/004_add_images_column.py
           python database/migrations/005_add_location_columns.py
+          python database/migrations/008_fix_malformed_last_sold_dates.py
 
       - name: Determine Task ID
         id: task_id
