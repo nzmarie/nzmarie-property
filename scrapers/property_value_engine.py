@@ -291,7 +291,7 @@ class PropertyValueEngine(BaseScraper):
                     if self.suburbs_filter:
                         sql = """
                             SELECT id, address, property_url FROM properties
-                            WHERE (bedrooms IS NULL OR year_built IS NULL OR description IS NULL OR cover_image_url IS NULL)
+                            WHERE (bedrooms IS NULL OR year_built IS NULL OR description IS NULL OR cover_image_url IS NULL OR last_sold_date IS NULL)
                               AND region = %s AND LOWER(suburb) = ANY(%s)
                             ORDER BY created_at ASC LIMIT 50
                         """
@@ -299,7 +299,7 @@ class PropertyValueEngine(BaseScraper):
                     else:
                         sql = """
                             SELECT id, address, property_url FROM properties
-                            WHERE (bedrooms IS NULL OR year_built IS NULL OR description IS NULL OR cover_image_url IS NULL)
+                            WHERE (bedrooms IS NULL OR year_built IS NULL OR description IS NULL OR cover_image_url IS NULL OR last_sold_date IS NULL)
                               AND region = %s
                             ORDER BY created_at ASC LIMIT 50
                         """

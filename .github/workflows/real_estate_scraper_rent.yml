@@ -53,8 +53,7 @@ jobs:
 
       - name: Run database migrations
         run: |
-          python database/migrations/006_add_real_estate_property_type.py
-          python database/migrations/007_add_realestate_description_listing.py
+          python database/scripts/run_migrations.py
 
       - name: Full progress reset (re-scrape from page 0)
         if: inputs.reset_progress == true

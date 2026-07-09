@@ -58,8 +58,7 @@ jobs:
 
       - name: Run database migrations
         run: |
-          python database/migrations/006_add_real_estate_property_type.py
-          python database/migrations/007_add_realestate_description_listing.py
+          python database/scripts/run_migrations.py
 
       - name: Delete existing real_estate records (full re-scrape)
         if: inputs.delete_existing == true
