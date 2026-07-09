@@ -19,16 +19,26 @@ on:
       max_runtime_hours:
         description: "Max runtime (hours)"
         required: false
-        default: "5.5"
+        default: "5"
         type: string
+      force_run:
+        description: "Force run? (Resets progress and starts fresh)"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 660
+
+    concurrency:
+      group: backfill-property-details-${{ inputs.region || 'auckland' }}
+      cancel-in-progress: false
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -56,11 +66,36 @@ jobs:
         run: |
           python database/scripts/run_migrations.py
 
+      - name: Determine Task ID
+        id: task_id
+        run: |
+          if [ "${{ inputs.region || 'auckland' }}" = "wellington" ]; then
+            TASK_ID=15
+          else
+            TASK_ID=14
+          fi
+          echo "task_id=$TASK_ID" >> $GITHUB_OUTPUT
+          echo "Assigned Task ID $TASK_ID for ${{ inputs.region || 'auckland' }}"
+
+      - name: Check and acquire lock
+        id: check_lock
+        env:
+          FORCE_RUN: ${{ inputs.force_run }}
+        run: |
+          FORCE_FLAG=""
+          if [ "$FORCE_RUN" = "true" ]; then FORCE_FLAG="--force"; fi
+          python database/scripts/gh_lock_manager.py --action check --task-id ${{ steps.task_id.outputs.task_id }} $FORCE_FLAG
+
+      - name: Set status to running
+        if: steps.check_lock.outputs.should_run == 'true'
+        run: python database/scripts/gh_lock_manager.py --action running --task-id ${{ steps.task_id.outputs.task_id }}
+
       - name: Run Backfill Mode
+        if: steps.check_lock.outputs.should_run == 'true'
         run: |
           SUBURBS="${{ inputs.suburbs }}"
           REGION="${{ inputs.region || 'auckland' }}"
-          MAX_RUNTIME="${{ inputs.max_runtime_hours || '5.5' }}"
+          MAX_RUNTIME="${{ inputs.max_runtime_hours || '5' }}"
 
           echo "========================================="
           echo "🔄 Starting BACKFILL mode"
@@ -71,31 +106,48 @@ jobs:
           echo "Fills:       bedrooms, bathrooms, images, description, RV, sold price, etc."
           echo "========================================="
 
-          # Build args — omit --suburbs entirely when input is 'all' so the
-          # scraper processes every record in the region that is missing data
-          ARGS=(--mode backfill --region "$REGION" --max_runtime "$MAX_RUNTIME" --force)
+          ARGS=(--mode backfill --region "$REGION" --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime "$MAX_RUNTIME" --force)
           if [ "$SUBURBS" != "all" ] && [ -n "$SUBURBS" ]; then
             ARGS+=(--suburbs "$SUBURBS")
           fi
 
           python scrapers/property_value_engine.py "${ARGS[@]}"
 
-          EXIT_CODE=$?
-          if [ $EXIT_CODE -eq 0 ]; then
-            echo ""
-            echo "========================================="
-            echo "✅ Backfill completed successfully"
-            echo "========================================="
+      - name: Reset status
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        run: |
+          python database/scripts/gh_lock_manager.py --action reset --task-id ${{ steps.task_id.outputs.task_id }}
+
+      - name: Trigger next run if not complete (Breakpoint Resume)
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS=$(python -c "
+          import sys; sys.path.append('.')
+          from utils.database import db
+          rows = db.query('SELECT status FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
+          print(rows[0]['status'] if rows else 'unknown')
+          ")
+
+          echo "Task status after run: $STATUS"
+
+          if [ "$STATUS" = "idle" ]; then
+            echo "🔄 Backfill not finished. Triggering next run to resume..."
+            curl -X POST \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              https://api.github.com/repos/${{ github.repository }}/actions/workflows/backfill_property_details.yml/dispatches \
+              -d "{\"ref\":\"main\",\"inputs\":{\"suburbs\":\"${{ inputs.suburbs }}\",\"region\":\"${{ inputs.region }}\",\"max_runtime_hours\":\"${{ inputs.max_runtime_hours }}\",\"force_run\":\"false\"}}"
+            echo "✅ Next run triggered to continue from breakpoint"
+          elif [ "$STATUS" = "complete" ]; then
+            echo "✅ Backfill is complete. Scraping cycle finished!"
           else
-            echo ""
-            echo "========================================="
-            echo "❌ Backfill failed with exit code $EXIT_CODE"
-            echo "========================================="
-            exit $EXIT_CODE
+            echo "Task has status '$STATUS'. No auto-trigger performed."
           fi
 
       - name: Show completion summary
-        if: success()
+        if: success() && steps.check_lock.outputs.should_run == 'true'
         run: |
           echo ""
           echo "========================================="
@@ -117,9 +169,10 @@ jobs:
           echo "========================================="
 
       - name: Upload Error Screenshots
-        if: failure()
+        if: failure() && steps.check_lock.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: backfill-error-screenshots
           path: screenshots/
           retention-days: 7
+          if-no-files-found: warn
