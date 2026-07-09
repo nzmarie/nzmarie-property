@@ -478,32 +478,21 @@ class PropertyValueEngine(BaseScraper):
 
     @staticmethod
     def _format_address(address_parts):
-        """
-        Smart address formatting with unit number detection.
-        
-        Examples:
-            ['1', '10', 'barker', 'rise'] -> '1/10 Barker Rise'
-            ['2', '23', 'cairnbrae', 'court'] -> '2/23 Cairnbrae Court'
-            ['65', 'andersons', 'road'] -> '65 Andersons Road'
-            ['1a', 'barker', 'rise'] -> '1A Barker Rise'
-        """
         if not address_parts:
             return ""
         
-        # Check if first two parts are numbers (unit/street number pattern)
         if len(address_parts) >= 2:
             first = address_parts[0]
             second = address_parts[1]
             
-            # Pattern: "1 10" -> "1/10" (both are pure digits)
-            if first.isdigit() and second.isdigit():
-                # Unit number format
+            p1 = r'^[a-zA-Z]{0,2}\d+[a-zA-Z]?$'
+            p2 = r'^\d+[a-zA-Z]?$'
+            if re.match(p1, first) and re.match(p2, second):
                 unit_part = f"{first}/{second}"
                 rest_parts = address_parts[2:]
                 formatted_rest = ' '.join(rest_parts).title()
                 return f"{unit_part} {formatted_rest}".strip()
         
-        # Default: title case with spaces
         return ' '.join(address_parts).title()
 
     @staticmethod

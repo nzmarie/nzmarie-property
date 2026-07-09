@@ -154,5 +154,13 @@ class TestPropertyValueParser(unittest.TestCase):
         self.assertEqual(PropertyValueEngine._to_sql_date(""), None)
         self.assertEqual(PropertyValueEngine._to_sql_date(None), None)
 
+    def test_format_address(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        self.assertEqual(PropertyValueEngine._format_address(["205", "2a", "munroe", "lane"]), "205/2a Munroe Lane")
+        self.assertEqual(PropertyValueEngine._format_address(["1", "30", "abercrombie", "street"]), "1/30 Abercrombie Street")
+        self.assertEqual(PropertyValueEngine._format_address(["1a", "30", "abercrombie", "street"]), "1a/30 Abercrombie Street")
+        self.assertEqual(PropertyValueEngine._format_address(["10", "barker", "rise"]), "10 Barker Rise")
+        self.assertEqual(PropertyValueEngine._format_address(["10a", "barker", "rise"]), "10A Barker Rise")
+
 if __name__ == '__main__':
     unittest.main()
