@@ -39,10 +39,13 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
         "property_url": full_url,
         "original_link": full_url,
         "status": "for Sale" if mode == 'buy' else "for Rent",
-        "listing_date_raw": None, 
+        "listing_date_raw": None,
+        "listing_date_parsed": None,
+        "listing_number": None,
         "price_display": None,
         "address": None,
         "agent_name": None,
+        "description": None,
         "region": region,
         "latitude": None,
         "longitude": None
@@ -54,11 +57,16 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
             logger.warning(f"Invalid relative URL: {relative_url}")
             return None
 
-        # Navigate to detail page
+        # Navigate to detail page — wait for description to render
         time.sleep(random.uniform(2, 4))
         logger.info(f"Navigating to detail page: {full_url}")
         page.goto(full_url, wait_until="domcontentloaded", timeout=45000)
-        
+        # Wait for description section to be present (React-rendered)
+        try:
+            page.wait_for_selector('[data-test="description-content__description"]', timeout=8000)
+        except Exception:
+            pass  # Continue anyway — other fields still available
+
         # 1. Address
         address = None
         addr_selectors = ['h1.p-h1', 'h1', '[data-test="address-display"]']
@@ -67,33 +75,63 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
                 address = page.locator(sel).first.inner_text().strip()
                 if address:
                     break
-        
+
         if not address or 'results in' in address.lower() or 'real estate for sale' in address.lower():
             logger.warning(f"Invalid address found for {full_url}: {address}")
             return None
-        
+
         data['address'] = address
 
-        # 2. Price / Rent
-        # For rent, it might be displayed differently, e.g. "$650 per week"
-        price_el = page.locator('[data-test="price-display"]').first
-        if price_el.is_visible():
-            data['price_display'] = price_el.inner_text().strip()
-            
-        # 3. Listing Date
+        # 2. Price
         try:
-            date_el = page.get_by_text("Listed on", exact=False).first
+            price_el = page.locator('[data-test="price-display"]').first
+            if price_el.is_visible():
+                data['price_display'] = price_el.inner_text().strip()
+        except Exception:
+            pass
+
+        # 3. Listing date + listing number
+        try:
+            date_el = page.locator('[data-test="description__listed-date"]').first
             if date_el.is_visible():
                 data['listing_date_raw'] = date_el.inner_text().strip()
+                # Parse "Listed on 8 November 2025" → datetime
+                import re as _re
+                from datetime import datetime
+                m = _re.search(r'(\d{1,2}\s+\w+\s+\d{4})', data['listing_date_raw'])
+                if m:
+                    try:
+                        data['listing_date_parsed'] = datetime.strptime(m.group(1), "%d %B %Y").strftime("%Y-%m-%d")
+                    except Exception:
+                        pass
         except Exception as e:
             logger.warning(f"Error finding listing date: {e}")
 
-        # 4. Agent / Office Name
+        try:
+            num_el = page.locator('[data-test="description__listing-number"]').first
+            if num_el.is_visible():
+                raw = num_el.inner_text().strip()
+                import re as _re
+                m = _re.search(r'(\d+)', raw)
+                if m:
+                    data['listing_number'] = m.group(1)
+        except Exception:
+            pass
+
+        # 4. Description
+        try:
+            desc_el = page.locator('[data-test="description-content__description"]').first
+            if desc_el.is_visible():
+                data['description'] = desc_el.inner_text().strip()
+        except Exception:
+            pass
+
+        # 5. Agent / Office Name
         try:
             agent_el = page.locator('[data-test="agent-name"], .agent-name').first
             if agent_el.is_visible():
                 data['agent_name'] = agent_el.inner_text().strip()
-            
+
             office_el = page.locator('[data-test="office-name"]').first
             if office_el.is_visible():
                 office_name = office_el.inner_text().strip()
@@ -101,7 +139,7 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
                     data['agent_name'] = f"{data['agent_name']} ({office_name})"
                 else:
                     data['agent_name'] = office_name
-        except:
+        except Exception:
             pass
 
         # 5. Bedrooms, Bathrooms, Area, Property Type

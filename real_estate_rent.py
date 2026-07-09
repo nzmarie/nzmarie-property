@@ -381,9 +381,12 @@ def scrape_rent_property_detail(page, relative_url):
         "original_link": full_url,
         "status": "for Rent",
         "listing_date_raw": None,
+        "listing_date_parsed": None,
+        "listing_number": None,
         "price_display": None,
         "address": None,
         "agent_name": None,
+        "description": None,
         "region": "auckland",
         "latitude": None,
         "longitude": None,
@@ -397,6 +400,11 @@ def scrape_rent_property_detail(page, relative_url):
         time.sleep(random.uniform(2, 4))
         logger.info(f"Navigating to rental detail page: {full_url}")
         page.goto(full_url, wait_until="domcontentloaded", timeout=45000)
+        # Wait for description to render
+        try:
+            page.wait_for_selector('[data-test="description-content__description"]', timeout=8000)
+        except Exception:
+            pass
 
         addr_selectors = ['h1.p-h1', 'h1', '[data-test="address-display"]']
         for sel in addr_selectors:
@@ -410,14 +418,42 @@ def scrape_rent_property_detail(page, relative_url):
             logger.warning(f"No valid address found for {full_url}")
             return None
 
-        price_el = page.locator('[data-test="price-display"]').first
-        if price_el.is_visible():
-            data['price_display'] = price_el.inner_text().strip()
+        try:
+            price_el = page.locator('[data-test="price-display"]').first
+            if price_el.is_visible():
+                data['price_display'] = price_el.inner_text().strip()
+        except Exception:
+            pass
 
         try:
-            date_el = page.get_by_text("Listed on", exact=False).first
+            date_el = page.locator('[data-test="description__listed-date"]').first
             if date_el.is_visible():
                 data['listing_date_raw'] = date_el.inner_text().strip()
+                import re as _re
+                from datetime import datetime as _dt
+                m = _re.search(r'(\d{1,2}\s+\w+\s+\d{4})', data['listing_date_raw'])
+                if m:
+                    try:
+                        data['listing_date_parsed'] = _dt.strptime(m.group(1), "%d %B %Y").strftime("%Y-%m-%d")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        try:
+            num_el = page.locator('[data-test="description__listing-number"]').first
+            if num_el.is_visible():
+                raw = num_el.inner_text().strip()
+                m = re.search(r'(\d+)', raw)
+                if m:
+                    data['listing_number'] = m.group(1)
+        except Exception:
+            pass
+
+        try:
+            desc_el = page.locator('[data-test="description-content__description"]').first
+            if desc_el.is_visible():
+                data['description'] = desc_el.inner_text().strip()
         except Exception:
             pass
 
@@ -425,6 +461,10 @@ def scrape_rent_property_detail(page, relative_url):
             agent_el = page.locator('[data-test="agent-name"], .agent-name').first
             if agent_el.is_visible():
                 data['agent_name'] = agent_el.inner_text().strip()
+            office_el = page.locator('[data-test="office-name"]').first
+            if office_el.is_visible():
+                office_name = office_el.inner_text().strip()
+                data['agent_name'] = f"{data['agent_name']} ({office_name})" if data['agent_name'] else office_name
         except Exception:
             pass
 
