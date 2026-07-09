@@ -47,5 +47,9 @@ deprecated_scripts/
 # SQL session files
 *.session.sql
 
+# Database files (local development only)
+*.db
+database/property_engine.db
+
 # Scratch / temp test scripts
 scratch/
