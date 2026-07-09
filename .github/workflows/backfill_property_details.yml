@@ -19,7 +19,7 @@ on:
       max_runtime_hours:
         description: "Max runtime (hours)"
         required: false
-        default: "1.8"
+        default: "5.5"
         type: string
 
 permissions:
@@ -28,7 +28,7 @@ permissions:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -63,7 +63,7 @@ jobs:
         run: |
           SUBURBS="${{ inputs.suburbs }}"
           REGION="${{ inputs.region || 'auckland' }}"
-          MAX_RUNTIME="${{ inputs.max_runtime_hours || '1.8' }}"
+          MAX_RUNTIME="${{ inputs.max_runtime_hours || '5.5' }}"
 
           echo "========================================="
           echo "🔄 Starting BACKFILL mode"

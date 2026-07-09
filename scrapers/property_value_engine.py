@@ -368,6 +368,13 @@ class PropertyValueEngine(BaseScraper):
 
                     last_sold_date_sql = _to_sql_date(data.get('last_sold_date'))
 
+                    # Validate last_sold_date format - reject if not None and not ISO format
+                    if last_sold_date_sql:
+                        # Must be YYYY-MM-DD format or None
+                        if not re.match(r'^\d{4}-\d{2}-\d{2}$', last_sold_date_sql):
+                            logger.warning(f"Invalid last_sold_date format for {prop['address']}: {last_sold_date_sql}. Setting to NULL.")
+                            last_sold_date_sql = None
+
                     update_sql = """
                         UPDATE properties
                         SET bedrooms = %s, bathrooms = %s, car_spaces = %s,
