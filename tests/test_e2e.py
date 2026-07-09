@@ -108,7 +108,7 @@ class TestPropertyValueEngineCheckpoint(unittest.TestCase):
         mock_get_state.assert_not_called()
 
     @patch('scrapers.property_value_engine.PropertyValueEngine.get_state')
-    def test_run_discovery_ignores_state_on_suburbs_filter(self, mock_get_state):
+    def test_run_discovery_uses_state_on_suburbs_filter(self, mock_get_state):
         from scrapers.property_value_engine import PropertyValueEngine
         engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10, suburbs_filter="Albany")
         engine.context = MagicMock()
@@ -118,7 +118,7 @@ class TestPropertyValueEngineCheckpoint(unittest.TestCase):
             asyncio.run(engine.run_discovery())
         except Exception as e:
             self.assertEqual(str(e), "Stop execution")
-        mock_get_state.assert_not_called()
+        mock_get_state.assert_called_once()
 
     @patch('scrapers.property_value_engine.PropertyValueEngine.get_state')
     def test_run_discovery_uses_state_otherwise(self, mock_get_state):

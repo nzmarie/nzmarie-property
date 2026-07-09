@@ -92,7 +92,8 @@ class PropertyValueParser:
             "suburb_median_price": None, "suburb_median_rent": None,
             "suburb_days_on_market": None,
             "latitude": None, "longitude": None,
-            "images": [], "history": [], "description": None
+            "images": [], "history": [], "description": None,
+            "suburb": None, "postcode": None
         }
 
         redux_data = {}
@@ -283,6 +284,22 @@ class PropertyValueParser:
             data["latitude"] = coords.get('latitude')
         if data["longitude"] is None:
             data["longitude"] = coords.get('longitude')
+
+        addr2_el = soup.find(attrs={'testid': 'addressLine2'})
+        if addr2_el:
+            addr2_text = addr2_el.get_text(strip=True)
+            if ',' in addr2_text:
+                parts = [p.strip() for p in addr2_text.split(',')]
+                if len(parts) >= 2:
+                    data["suburb"] = parts[0]
+                    data["postcode"] = parts[1]
+            else:
+                match = re.search(r'^(.*?)\s*(\d{4})$', addr2_text)
+                if match:
+                    data["suburb"] = match.group(1).strip()
+                    data["postcode"] = match.group(2).strip()
+                else:
+                    data["suburb"] = addr2_text
 
         return data
 

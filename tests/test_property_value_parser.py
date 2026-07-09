@@ -103,6 +103,7 @@ class TestPropertyValueParser(unittest.TestCase):
             <div testid="story-content">
                 <p testid="paragraph1">A beautiful residential property.</p>
             </div>
+            <h1 testid="addressLine1">1/7a Alexander Avenue <span testid="addressLine2"> Torbay, 0630</span></h1>
             <div testid="pt-year-0">2020</div>
             <strong testid="pt-description-0">Sold for $900,000</strong>
             <div testid="pt-interval-0">3 years</div>
@@ -121,6 +122,8 @@ class TestPropertyValueParser(unittest.TestCase):
         self.assertEqual(data["land_value"], 400000.0)
         self.assertEqual(data["improvement_value"], 650000.0)
         self.assertIn("beautiful residential property", data["description"])
+        self.assertEqual(data["suburb"], "Torbay")
+        self.assertEqual(data["postcode"], "0630")
         self.assertEqual(len(data["history"]), 1)
         self.assertEqual(data["history"][0]["event_description"], "Sold for $900,000")
 

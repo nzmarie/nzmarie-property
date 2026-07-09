@@ -290,7 +290,7 @@ class PropertyValueEngine(BaseScraper):
                 try:
                     if self.suburbs_filter:
                         sql = """
-                            SELECT id, address, property_url FROM properties
+                            SELECT id, address, suburb, property_url FROM properties
                             WHERE (bedrooms IS NULL OR year_built IS NULL OR description IS NULL OR cover_image_url IS NULL OR last_sold_date IS NULL)
                               AND region = %s AND LOWER(suburb) = ANY(%s)
                             ORDER BY created_at ASC LIMIT 50
@@ -298,7 +298,7 @@ class PropertyValueEngine(BaseScraper):
                         properties = db.query(sql, (self.region, self.suburbs_filter))
                     else:
                         sql = """
-                            SELECT id, address, property_url FROM properties
+                            SELECT id, address, suburb, property_url FROM properties
                             WHERE (bedrooms IS NULL OR year_built IS NULL OR description IS NULL OR cover_image_url IS NULL OR last_sold_date IS NULL)
                               AND region = %s
                             ORDER BY created_at ASC LIMIT 50
@@ -318,7 +318,8 @@ class PropertyValueEngine(BaseScraper):
             for prop in properties:
                 if self.should_stop(): break
                 
-                logger.info(f"Backfilling details for: {prop['address']}")
+                db_suburb = prop.get('suburb')
+                logger.info(f"Backfilling details for: {prop['address']}{', ' + db_suburb if db_suburb else ''}")
                 
                 # Update heartbeat occasionally (every property)
                 if self.task_id:
@@ -359,7 +360,9 @@ class PropertyValueEngine(BaseScraper):
                             suburb_median_price = %s, suburb_median_rent = %s,
                             suburb_days_on_market = %s,
                             latitude = %s, longitude = %s,
-                            cover_image_url = %s
+                            cover_image_url = %s,
+                            postcode = COALESCE(%s, postcode),
+                            suburb = COALESCE(%s, suburb)
                         WHERE id = %s
                     """
                     
@@ -379,6 +382,7 @@ class PropertyValueEngine(BaseScraper):
                             data.get('suburb_days_on_market'),
                             data.get('latitude'), data.get('longitude'),
                             data['images'][0] if data['images'] else None,
+                            data.get('postcode'), data.get('suburb'),
                             prop['id']
                         ))
                     except Exception as date_error:
@@ -398,7 +402,9 @@ class PropertyValueEngine(BaseScraper):
                                     suburb_median_price = %s, suburb_median_rent = %s,
                                     suburb_days_on_market = %s,
                                     latitude = %s, longitude = %s,
-                                    cover_image_url = %s
+                                    cover_image_url = %s,
+                                    postcode = COALESCE(%s, postcode),
+                                    suburb = COALESCE(%s, suburb)
                                 WHERE id = %s
                             """
                             db.execute(update_sql_no_date, (
@@ -416,6 +422,7 @@ class PropertyValueEngine(BaseScraper):
                                 data.get('suburb_days_on_market'),
                                 data.get('latitude'), data.get('longitude'),
                                 data['images'][0] if data['images'] else None,
+                                data.get('postcode'), data.get('suburb'),
                                 prop['id']
                             ))
                         else:
@@ -436,7 +443,8 @@ class PropertyValueEngine(BaseScraper):
                         if history_params:
                             db.execute_batch(history_sql, history_params)
 
-                    logger.info(f"  Successfully updated {prop['address']}")
+                    parsed_suburb = data.get('suburb') or db_suburb
+                    logger.info(f"  Successfully updated {prop['address']}{', ' + parsed_suburb if parsed_suburb else ''}")
                     
                 except Exception as e:
                     logger.error(f"Failed to backfill {prop['address']}: {e}")
