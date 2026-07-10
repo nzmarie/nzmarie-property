@@ -282,7 +282,6 @@ class PropertyValueEngine(BaseScraper):
     async def run_backfill(self):
         logger.info(f"Starting Backfill Mode for region: {self.region}")
         
-        batch_limit = 500
         processed_count = 0
         
         while not self.should_stop():
@@ -292,7 +291,7 @@ class PropertyValueEngine(BaseScraper):
                     if self.suburbs_filter:
                         sql = """
                             SELECT id, address, suburb, property_url FROM properties
-                            WHERE (bedrooms IS NULL OR year_built IS NULL OR description IS NULL OR cover_image_url IS NULL OR last_sold_date IS NULL)
+                            WHERE backfilled_at IS NULL
                               AND region = %s AND LOWER(suburb) = ANY(%s)
                             ORDER BY created_at ASC LIMIT 50
                         """
@@ -300,7 +299,7 @@ class PropertyValueEngine(BaseScraper):
                     else:
                         sql = """
                             SELECT id, address, suburb, property_url FROM properties
-                            WHERE (bedrooms IS NULL OR year_built IS NULL OR description IS NULL OR cover_image_url IS NULL OR last_sold_date IS NULL)
+                            WHERE backfilled_at IS NULL
                               AND region = %s
                             ORDER BY created_at ASC LIMIT 50
                         """
@@ -444,13 +443,21 @@ class PropertyValueEngine(BaseScraper):
                         if history_params:
                             db.execute_batch(history_sql, history_params)
 
+                    db.execute("UPDATE properties SET backfilled_at = NOW() WHERE id = %s", (prop['id'],))
+
                     parsed_suburb = data.get('suburb') or db_suburb
-                    logger.info(f"  Successfully updated {prop['address']}{', ' + parsed_suburb if parsed_suburb else ''}")
+                    processed_count += 1
+                    logger.info(f"  Successfully updated {prop['address']}{', ' + parsed_suburb if parsed_suburb else ''} (#{processed_count})")
                     
                 except Exception as e:
                     logger.error(f"Failed to backfill {prop['address']}: {e}")
+                    db.execute("UPDATE properties SET backfilled_at = NOW() WHERE id = %s", (prop['id'],))
                 finally:
                     await page.close()
+
+        if self.should_stop():
+            elapsed_h = (time.monotonic() - self.start_time) / 3600
+            logger.info(f"⏱️ Time limit reached ({elapsed_h:.1f}h). Processed {processed_count} properties. Exiting for breakpoint resume.")
 
     @staticmethod
     def _to_sql_date(date_str):

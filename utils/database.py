@@ -48,8 +48,8 @@ class DatabaseClient:
         # 5. Handle psycopg2 DSN (Key-Value) - use explicit postgresql:// with sslmode=require
         self.psycopg2_dsn = f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.dbname}?sslmode=require"
 
-        # Log status (masking password)
-        print(f"Database initialized. User: {self.user}, Host: {self.host}")
+        import sys
+        print(f"Database initialized. User: {self.user}, Host: {self.host}", file=sys.stderr)
         self._engine = None
 
     @property
