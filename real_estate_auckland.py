@@ -176,7 +176,8 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
                              'Commercial','Office','Retail','Industrial'].includes(label)) {
                             results['property_type'] = label;
                         }
-                        if (label === 'Garage') results['car_spaces'] = value;
+                        if (label === 'Garage')     results['garage']      = value;
+                        if (label === 'Other park') results['other_park']  = value;
                     });
                     return results;
                 }
@@ -205,9 +206,20 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
             if features.get('property_type'):
                 data['property_type'] = features['property_type']
 
-            if features.get('car_spaces'):
-                m = re.search(r'\d+', features['car_spaces'])
-                if m: data['car_spaces'] = int(m.group())
+            total_car = 0
+            has_car = False
+            if features.get('garage'):
+                m = re.search(r'\d+', features['garage'])
+                if m:
+                    total_car += int(m.group())
+                    has_car = True
+            if features.get('other_park'):
+                m = re.search(r'\d+', features['other_park'])
+                if m:
+                    total_car += int(m.group())
+                    has_car = True
+            if has_car:
+                data['car_spaces'] = total_car
 
         except Exception as e:
             logger.warning(f"Error extracting features: {e}")

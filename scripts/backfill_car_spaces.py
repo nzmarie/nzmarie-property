@@ -49,21 +49,25 @@ def extract_garage_from_page(page, url):
                 const container = document.querySelector('div[data-test="features-icons"]');
                 if (!container) return null;
                 const items = container.querySelectorAll(':scope > div');
+                let total = 0;
+                let found = false;
                 for (const item of items) {
                     const titleEl = item.querySelector('svg title');
                     const span = item.querySelector('span');
                     if (!titleEl || !span) continue;
-                    if (titleEl.textContent.trim() === 'Garage') {
-                        return span.textContent.trim();
+                    const label = titleEl.textContent.trim();
+                    if (label === 'Garage' || label === 'Other park') {
+                        const val = parseInt(span.textContent.trim(), 10);
+                        if (!isNaN(val)) {
+                            total += val;
+                            found = true;
+                        }
                     }
                 }
-                return null;
+                return found ? total : null;
             }
         """)
-        if result:
-            m = re.search(r'\d+', result)
-            return int(m.group()) if m else None
-        return None
+        return result
     except Exception as e:
         logger.warning(f"Error extracting garage from {url}: {e}")
         return None
@@ -88,7 +92,7 @@ def backfill(table, limit=None, max_runtime_hours=3):
     logger.info(f"Found {total} records with NULL car_spaces in {table}")
 
     if total == 0:
-        print(f"✅ {table}: No records need backfill (car_spaces already filled or no URLs)")
+        print(f"[OK] {table}: No records need backfill (car_spaces already filled or no URLs)")
         return
 
     start_time = time.time()
@@ -124,12 +128,12 @@ def backfill(table, limit=None, max_runtime_hours=3):
             if car is not None:
                 if update_car_spaces(table, rid, car):
                     updated += 1
-                    print(f"  ✅ car_spaces={car}")
+                    print(f"  [OK] car_spaces={car}")
                 else:
                     errors += 1
             else:
                 skipped += 1
-                print(f"  ⏭ no garage data found")
+                print("  [SKIP] no garage data found")
 
             if i < total - 1:
                 time.sleep(random.uniform(1, 2))
