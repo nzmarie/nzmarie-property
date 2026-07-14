@@ -128,6 +128,43 @@ def normalize_for_fuzzy(address):
         return ''
     # Remove slashes for fuzzy comparison
     return fp.replace('/', ' ')
+
+
+def parse_nz_address(raw_address):
+    """Parse a full NZ address string into components.
+
+    Handles formats like:
+      "3 Pearl Grove, Ashhurst, Palmerston North City"
+      "2/11 Aeroview Drive, Beach Haven, Auckland"
+      "45 Victoria St, Auckland 1010"
+
+    Returns:
+        dict with keys: street_address (str), suburb (str|None), city (str|None)
+    """
+    if not raw_address:
+        return {"street_address": None, "suburb": None, "city": None}
+
+    parts = [p.strip() for p in raw_address.split(",")]
+
+    if len(parts) >= 3:
+        street_address = parts[0]
+        suburb = parts[-2]
+        city = parts[-1]
+    elif len(parts) == 2:
+        street_address = parts[0]
+        suburb = None
+        city = parts[1]
+    else:
+        street_address = parts[0]
+        suburb = None
+        city = None
+
+    return {
+        "street_address": street_address,
+        "suburb": suburb,
+        "city": city,
+    }
+
 import re
 
 def get_canonical_address(address):

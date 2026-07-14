@@ -25,6 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from config.supabase_config import insert_real_estate_rent, create_supabase_client, upsert_real_estate_rent_detail
+from utils.address_helper import parse_nz_address
 
 # Function to create scraping progress table if it doesn't exist
 def create_scraping_progress_table():
@@ -414,6 +415,15 @@ def scrape_rent_property_detail(page, relative_url):
                     data['address'] = address
                     break
 
+        if data.get('address'):
+            parsed = parse_nz_address(data['address'])
+            if parsed['suburb']:
+                data['address'] = f"{parsed['street_address']}, {parsed['suburb']}"
+            else:
+                data['address'] = parsed['street_address']
+            data['suburb'] = parsed['suburb']
+            data['city'] = parsed['city']
+
         if not data.get('address'):
             logger.warning(f"No valid address found for {full_url}")
             return None
@@ -488,6 +498,7 @@ def scrape_rent_property_detail(page, relative_url):
                         if (['Apartment','House','Townhouse','Unit','Section','Lifestyle','Rural'].includes(label)) {
                             results['property_type'] = label;
                         }
+                        if (label === 'Garage') results['car_spaces'] = value;
                     });
                     return results;
                 }
@@ -509,6 +520,9 @@ def scrape_rent_property_detail(page, relative_url):
                     data['land_area'] = int(num * 10000) if 'ha' in val.lower() else int(num)
             if features.get('property_type'):
                 data['property_type'] = features['property_type']
+            if features.get('car_spaces'):
+                m = re.search(r'\d+', features['car_spaces'])
+                if m: data['car_spaces'] = int(m.group())
         except Exception:
             pass
 
@@ -557,7 +571,7 @@ def check_real_estate_rent_in_supabase(address: str) -> bool:
         # If there's an error checking, we assume it doesn't exist to avoid missing data
         return False
 
-def scrape_properties(main_url, max_pages, max_runtime_hours=5.2):
+def scrape_properties(main_url, max_pages, max_runtime_hours=5.5):
     """
     Scrape properties with progress tracking and time limit.
     
@@ -626,6 +640,7 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.2):
             page = context.new_page()
             page.on("dialog", handle_dialog)
 
+            timed_out = False
             for page_num in range(start_page + 1, max_pages + 1):
                 # Check if we've exceeded the maximum runtime
                 elapsed_time = time.time() - start_time
@@ -641,6 +656,7 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.2):
                         logger.info("Rent scraper status updated to 'idle' due to timeout.")
                     except Exception as e:
                         logger.error(f"Error updating status to 'idle': {e}")
+                    timed_out = True
                     break
 
                 update_lock_timestamp()
@@ -684,9 +700,7 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.2):
                 time.sleep(60)  # Wait for 1 minute before checking again
                 update_lock_timestamp()  # Update lock timestamp to indicate we're still running
 
-        # Mark as complete if we finished processing all available data
-        # regardless of time elapsed (unless we hit timeout during processing)
-        if has_data_to_process:
+        if not timed_out and has_data_to_process:
             try:
                 supabase = create_supabase_client()
                 supabase.table('scraping_progress').update({
@@ -697,7 +711,7 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.2):
             except Exception as e:
                 logger.error(f"Error marking rent scraper task as complete: {e}")
         else:
-            logger.info("No data processed, keeping current status")
+            logger.info(f"Keeping current status (timed_out={timed_out}, has_data={has_data_to_process})")
             
     except Exception as e:
         logger.error(f"Error in scraping process: {e}")
@@ -776,8 +790,7 @@ def main():
 
         max_pages = 412
         scrape_properties(main_url, max_pages)
-        mark_complete()
-        logger.info("Scraping process completed successfully")
+        logger.info("Scraping process completed (status managed internally)")
     except Exception as e:
         logger.error(f"Error in main function: {e}")
         logger.error(f"Error details: {traceback.format_exc()}")

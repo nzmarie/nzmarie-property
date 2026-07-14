@@ -1,6 +1,8 @@
 name: RealEstate Scraper (Rent)
 
 on:
+  schedule:
+    - cron: "0 14 * * 2"  # Wed 2:00 AM NZST = Tue 14:00 UTC
   workflow_dispatch:
     inputs:
       force_run:

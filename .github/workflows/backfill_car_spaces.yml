@@ -1,0 +1,69 @@
+name: Backfill Car Spaces
+
+on:
+  workflow_dispatch:
+    inputs:
+      table:
+        description: "Table to backfill"
+        required: true
+        default: "real_estate"
+        type: choice
+        options:
+          - real_estate
+          - real_estate_rent
+          - all
+      limit:
+        description: "Max records (empty = all)"
+        required: false
+        default: ""
+        type: string
+      max_runtime_hours:
+        description: "Max runtime (hours)"
+        required: false
+        default: "5"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PYTHONPATH: .
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run backfill
+        run: |
+          ARGS="--table ${{ inputs.table }} --max-runtime ${{ inputs.max_runtime_hours }}"
+          if [ -n "${{ inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ inputs.limit }}"
+          fi
+          python scripts/backfill_car_spaces.py $ARGS
+
+      - name: Upload error screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-car-error-screenshots
+          path: screenshots/
+          retention-days: 7

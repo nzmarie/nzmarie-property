@@ -10,6 +10,7 @@ import logging
 load_dotenv()
 
 from config.supabase_config import insert_real_estate, create_supabase_client, upsert_real_estate_detail, upsert_real_estate_rent_detail
+from utils.address_helper import parse_nz_address
 import re
 import json
 from bs4 import BeautifulSoup
@@ -80,7 +81,13 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
             logger.warning(f"Invalid address found for {full_url}: {address}")
             return None
 
-        data['address'] = address
+        parsed = parse_nz_address(address)
+        if parsed['suburb']:
+            data['address'] = f"{parsed['street_address']}, {parsed['suburb']}"
+        else:
+            data['address'] = parsed['street_address']
+        data['suburb'] = parsed['suburb']
+        data['city'] = parsed['city']
 
         # 2. Price
         try:
@@ -169,6 +176,7 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
                              'Commercial','Office','Retail','Industrial'].includes(label)) {
                             results['property_type'] = label;
                         }
+                        if (label === 'Garage') results['car_spaces'] = value;
                     });
                     return results;
                 }
@@ -196,6 +204,10 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
 
             if features.get('property_type'):
                 data['property_type'] = features['property_type']
+
+            if features.get('car_spaces'):
+                m = re.search(r'\d+', features['car_spaces'])
+                if m: data['car_spaces'] = int(m.group())
 
         except Exception as e:
             logger.warning(f"Error extracting features: {e}")
