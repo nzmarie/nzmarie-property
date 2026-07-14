@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 def get_records_to_backfill(table, limit=None):
     """Get records with NULL car_spaces and a valid property_url."""
-    sql = f"SELECT id, property_url, address FROM {table} WHERE car_spaces IS NULL AND property_url IS NOT NULL"
+    sql = f"SELECT id, property_url, address, suburb, city FROM {table} WHERE car_spaces IS NULL AND property_url IS NOT NULL"
     params = []
     if limit:
         sql += " LIMIT %s"
@@ -116,7 +116,9 @@ def backfill(table, limit=None, max_runtime_hours=3):
             rid = rec['id']
             url = rec['property_url']
             addr = rec['address']
-            logger.info(f"[{i+1}/{total}] {addr}")
+            sub = rec.get('suburb') or ''
+            ci = rec.get('city') or ''
+            logger.info(f"[{i+1}/{total}] {addr} | sub={sub} | city={ci}")
 
             car = extract_garage_from_page(page, url)
             if car is not None:

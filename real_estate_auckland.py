@@ -775,7 +775,9 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
                                 else:
                                     upsert_real_estate_rent_detail(detail_data)
                                     
-                                print(f"✅ Saved: {detail_data.get('address')} | {detail_data.get('price_display')}")
+                                sub = detail_data.get('suburb') or ''
+                                ci = detail_data.get('city') or ''
+                                print(f"✅ Saved: {detail_data.get('address')} | sub={sub} | city={ci} | {detail_data.get('price_display')}")
                             else:
                                 print(f"⚠️ Failed to scrape: {link}")
                                 

@@ -675,7 +675,9 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.5):
                             detail_data = scrape_rent_property_detail(page, link)
                             if detail_data and detail_data.get('address'):
                                 upsert_real_estate_rent_detail(detail_data)
-                                print(f"✅ Saved rent: {detail_data.get('address')} | {detail_data.get('price_display')}")
+                                sub = detail_data.get('suburb') or ''
+                                ci = detail_data.get('city') or ''
+                                print(f"✅ Saved rent: {detail_data.get('address')} | sub={sub} | city={ci} | {detail_data.get('price_display')}")
                             else:
                                 print(f"⚠️ Failed to scrape rent detail: {link}")
                     else:
