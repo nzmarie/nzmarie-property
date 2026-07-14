@@ -362,7 +362,9 @@ class PropertyValueEngine(BaseScraper):
                             latitude = %s, longitude = %s,
                             cover_image_url = %s,
                             postcode = COALESCE(%s, postcode),
-                            suburb = COALESCE(%s, suburb)
+                            suburb = COALESCE(%s, suburb),
+                            property_history = %s,
+                            has_rental_history = %s
                         WHERE id = %s
                     """
                     
@@ -383,6 +385,8 @@ class PropertyValueEngine(BaseScraper):
                             data.get('latitude'), data.get('longitude'),
                             data['images'][0] if data['images'] else None,
                             data.get('postcode'), data.get('suburb'),
+                            data.get('property_history'),
+                            data.get('has_rental_history', False),
                             prop['id']
                         ))
                     except Exception as date_error:
@@ -404,7 +408,9 @@ class PropertyValueEngine(BaseScraper):
                                     latitude = %s, longitude = %s,
                                     cover_image_url = %s,
                                     postcode = COALESCE(%s, postcode),
-                                    suburb = COALESCE(%s, suburb)
+                                    suburb = COALESCE(%s, suburb),
+                                    property_history = %s,
+                                    has_rental_history = %s
                                 WHERE id = %s
                             """
                             db.execute(update_sql_no_date, (
@@ -423,6 +429,8 @@ class PropertyValueEngine(BaseScraper):
                                 data.get('latitude'), data.get('longitude'),
                                 data['images'][0] if data['images'] else None,
                                 data.get('postcode'), data.get('suburb'),
+                                data.get('property_history'),
+                                data.get('has_rental_history', False),
                                 prop['id']
                             ))
                         else:

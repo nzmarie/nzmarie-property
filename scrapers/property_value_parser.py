@@ -1,3 +1,4 @@
+import json
 from bs4 import BeautifulSoup
 import logging
 import re
@@ -93,7 +94,9 @@ class PropertyValueParser:
             "suburb_days_on_market": None,
             "latitude": None, "longitude": None,
             "images": [], "history": [], "description": None,
-            "suburb": None, "postcode": None
+            "suburb": None, "postcode": None,
+            "property_history": None,
+            "has_rental_history": False
         }
 
         redux_data = {}
@@ -102,7 +105,6 @@ class PropertyValueParser:
             m = re.search(r'window\.REDUX_DATA\s*=\s*({.*?})(?:;|$)', script.string)
             if m:
                 try:
-                    import json
                     redux_data = json.loads(m.group(1))
                 except Exception:
                     pass
@@ -197,6 +199,16 @@ class PropertyValueParser:
                 ev_type = event.get("type", "").lower()
                 ev_date = event.get("date", "")
                 price_desc = event.get("priceDescription", "")
+                agent = event.get("eventByCompany", "") or ""
+                interval_desc = event.get("intervalDescription", "").strip()
+
+                display_type = (
+                    "SOLD" if ev_type == "sale" else
+                    "Rented" if ev_type == "rent" else
+                    "Listed" if ev_type == "listing" else
+                    ev_type.title()
+                )
+
                 desc = ""
                 if ev_type == "sale":
                     desc = f"Sold for {price_desc}"
@@ -206,12 +218,14 @@ class PropertyValueParser:
                     desc = f"Asking Price \u2014 {price_desc}"
                 else:
                     desc = f"{ev_type.title()} \u2014 {price_desc}"
-                
-                year = ev_date.split('/')[-1] if '/' in ev_date else ev_date
+
                 data["history"].append({
-                    'event_date': year,
+                    'event_date': ev_date,
                     'event_description': desc,
-                    'event_interval': event.get("intervalDescription", "").strip()
+                    'event_interval': interval_desc,
+                    'type': display_type,
+                    'price': price_desc,
+                    'agent': agent
                 })
 
         if data["bedrooms"] is None:
@@ -300,6 +314,24 @@ class PropertyValueParser:
                     data["postcode"] = match.group(2).strip()
                 else:
                     data["suburb"] = addr2_text
+
+        if data["history"]:
+            json_entries = []
+            has_rental = False
+            for ev in data["history"]:
+                json_entries.append({
+                    "date": ev.get("event_date", ""),
+                    "type": ev.get("type", ""),
+                    "price": ev.get("price", ""),
+                    "agent": ev.get("agent", ""),
+                    "interval": ev.get("event_interval", "")
+                })
+                tp = ev.get("type", "").lower()
+                desc = ev.get("event_description", "").lower()
+                if tp == "rented" or "rent" in desc:
+                    has_rental = True
+            data["property_history"] = json.dumps(json_entries, ensure_ascii=False)
+            data["has_rental_history"] = has_rental
 
         return data
 
@@ -400,10 +432,34 @@ class PropertyValueParser:
             event_description = desc_el.get_text(strip=True) if desc_el else "Unknown"
             interval_el = soup.find(attrs={'testid': f'pt-interval-{idx}'})
             event_interval = interval_el.get_text(strip=True) if interval_el else ""
+            agent_el = soup.find(attrs={'testid': f'pt-eventByCom-{idx}'})
+            agent = agent_el.get_text(strip=True) if agent_el else ""
+            if agent.startswith("Listed by "):
+                agent = agent[10:]
+
+            ev_type = ""
+            ev_price = ""
+            if event_description.startswith("Sold for "):
+                ev_type = "SOLD"
+                ev_price = event_description[9:]
+            elif "Listed for Rent" in event_description:
+                ev_type = "Rented"
+                if " at " in event_description:
+                    ev_price = event_description.split(" at ")[-1]
+            elif "Asking" in event_description:
+                ev_type = "Listed"
+                if "\u2014" in event_description:
+                    ev_price = event_description.split("\u2014")[-1].strip()
+            elif "Built" in event_description:
+                ev_type = "Built"
+
             property_history.append({
                 'event_date': event_date,
                 'event_description': event_description,
-                'event_interval': event_interval
+                'event_interval': event_interval,
+                'type': ev_type,
+                'price': ev_price,
+                'agent': agent
             })
         return property_history
 

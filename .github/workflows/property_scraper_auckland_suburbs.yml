@@ -104,26 +104,10 @@ jobs:
             --suburbs "$SUBURBS_VAL" \
             ${{ inputs.force_run && '--force' || '' }}
 
-      - name: Check discovery completion
-        id: discovery_check
-        if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'discovery'
-        run: |
-          STATUS=$(python -c "
-          import sys, json; sys.path.append('.')
-          from utils.database import db
-          rows = db.query('SELECT status, last_processed_id FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
-          if rows:
-              print(rows[0]['status'])
-          else:
-              print('unknown')
-          ")
-          echo "Task status after discovery: $STATUS"
-          echo "discovery_status=$STATUS" >> $GITHUB_OUTPUT
-
       - name: Run Backfill Mode (after discovery or standalone)
         if: |
           steps.check_lock.outputs.should_run == 'true'
-          && (inputs.mode == 'backfill' || (inputs.mode == 'discovery' && steps.discovery_check.outputs.discovery_status == 'complete'))
+          && (inputs.mode == 'backfill' || inputs.mode == 'discovery')
         run: |
           SUBURBS_VAL="${{ inputs.suburbs || 'Northcross,Oteha,Torbay,Fairview Heights,Waiake,Browns Bay,Pinehill,Rothesay Bay,Murrays Bay,Albany' }}"
           
@@ -202,12 +186,16 @@ jobs:
           if [ "$RESULT" = "COMPLETE" ]; then
             echo "✅ Task ${{ steps.task_id.outputs.task_id }} is complete. Scraping cycle finished!"
           elif [ "$RESULT" = "HAS_PROGRESS" ]; then
-            echo "🔄 Task has saved progress. Triggering next run to resume from breakpoint..."
+            NEXT_MODE="${{ inputs.mode }}"
+            if [ "${{ inputs.mode }}" = "discovery" ]; then
+              NEXT_MODE="backfill"
+            fi
+            echo "🔄 Task has saved progress. Triggering next run to resume from breakpoint in $NEXT_MODE mode..."
             curl -X POST \
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: token $GITHUB_TOKEN" \
               https://api.github.com/repos/${{ github.repository }}/actions/workflows/property_scraper_auckland_suburbs.yml/dispatches \
-              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"${{ inputs.mode }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"force_run\":\"false\"}}"
+              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"suburbs\":\"${{ inputs.suburbs }}\",\"force_run\":\"false\"}}"
             echo "✅ Next run triggered to continue from breakpoint"
           else
             echo "Task has no saved progress. No auto-trigger performed."
