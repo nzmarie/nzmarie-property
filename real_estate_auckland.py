@@ -787,15 +787,16 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
                             
                             if detail_data and detail_data.get('address'):
                                 if mode == 'buy':
-                                    upsert_real_estate_detail(detail_data)
+                                    ok = upsert_real_estate_detail(detail_data)
                                 else:
-                                    upsert_real_estate_rent_detail(detail_data)
-                                    
-                                sub = detail_data.get('suburb') or ''
-                                ci = detail_data.get('city') or ''
-                                print(f"✅ Saved: {detail_data.get('address')} | sub={sub} | city={ci} | {detail_data.get('price_display')}")
+                                    ok = upsert_real_estate_rent_detail(detail_data)
+
+                                sub = detail_data.get('suburb') or '-'
+                                ci = detail_data.get('city') or '-'
+                                status = "OK" if ok else "FAIL"
+                                logger.info(f"[SAVE] {status} | addr={detail_data.get('address')} | sub={sub} | city={ci} | price={detail_data.get('price_display')}")
                             else:
-                                print(f"⚠️ Failed to scrape: {link}")
+                                logger.warning(f"[SAVE] FAIL | no address scraped | {link}")
                                 
                     else:
                         print(f"No links found on page {page_num}. Continuing.")

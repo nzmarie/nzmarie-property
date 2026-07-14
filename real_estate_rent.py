@@ -691,12 +691,13 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.5):
                         for link in links:
                             detail_data = scrape_rent_property_detail(page, link)
                             if detail_data and detail_data.get('address'):
-                                upsert_real_estate_rent_detail(detail_data)
-                                sub = detail_data.get('suburb') or ''
-                                ci = detail_data.get('city') or ''
-                                print(f"✅ Saved rent: {detail_data.get('address')} | sub={sub} | city={ci} | {detail_data.get('price_display')}")
+                                ok = upsert_real_estate_rent_detail(detail_data)
+                                sub = detail_data.get('suburb') or '-'
+                                ci = detail_data.get('city') or '-'
+                                status = "OK" if ok else "FAIL"
+                                logger.info(f"[SAVE] {status} | addr={detail_data.get('address')} | sub={sub} | city={ci} | price={detail_data.get('price_display')}")
                             else:
-                                print(f"⚠️ Failed to scrape rent detail: {link}")
+                                logger.warning(f"[SAVE] FAIL | no address scraped | {link}")
                     else:
                         print(f"No rental links found on page {page_num}. Continuing.")
 
