@@ -357,8 +357,12 @@ def fetch_property_links_rent(page, url):
         return []
 
     try:
-        selector = 'a[href*="/residential/rent/"]:not([href*="map"])'
-        links = [el.get_attribute('href') for el in page.locator(selector).all()]
+        links = page.evaluate("""
+            () => {
+                const anchors = document.querySelectorAll('a[href*="/residential/rent/"]:not([href*="map"])');
+                return Array.from(anchors).map(el => el.getAttribute('href')).filter(Boolean);
+            }
+        """)
         unique_links = list(set([
             l for l in links
             if l and '/residential/rent/' in l and '?' not in l and re.search(r'/\d{6,}/', l)

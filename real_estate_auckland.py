@@ -284,9 +284,13 @@ def fetch_property_links(page, url, mode='buy'):
         # Determine URL pattern based on mode
         url_pattern = "/residential/sale/" if mode == 'buy' else "/residential/rent/"
         
-        # Get all links
-        selector = f'a[href*="{url_pattern}"]:not([href*="map"])'
-        links = [el.get_attribute('href') for el in page.locator(selector).all()]
+        # Get all links via JS (avoids Playwright lazy-load timeout)
+        links = page.evaluate(f"""
+            () => {{
+                const anchors = document.querySelectorAll('a[href*="{url_pattern}"]:not([href*="map"])');
+                return Array.from(anchors).map(el => el.getAttribute('href')).filter(Boolean);
+            }}
+        """)
         
         # Filter and dedup - IMPORTANT: exclude links with '?' as they are usually pagination/search filters
         unique_links = list(set([
