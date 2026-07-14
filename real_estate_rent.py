@@ -421,10 +421,7 @@ def scrape_rent_property_detail(page, relative_url):
 
         if data.get('address'):
             parsed = parse_nz_address(data['address'])
-            if parsed['suburb']:
-                data['address'] = f"{parsed['street_address']}, {parsed['suburb']}"
-            else:
-                data['address'] = parsed['street_address']
+            data['address'] = parsed['street_address']
             data['suburb'] = parsed['suburb']
             data['city'] = parsed['city']
 
@@ -695,7 +692,7 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.5):
                                 sub = detail_data.get('suburb') or '-'
                                 ci = detail_data.get('city') or '-'
                                 status = "OK" if ok else "FAIL"
-                                logger.info(f"[SAVE] {status} | addr={detail_data.get('address')} | sub={sub} | city={ci} | price={detail_data.get('price_display')}")
+                                logger.info(f"[SAVE] {status} | {detail_data.get('address')}, {sub}, {ci} | price={detail_data.get('price_display')}")
                             else:
                                 logger.warning(f"[SAVE] FAIL | no address scraped | {link}")
                     else:

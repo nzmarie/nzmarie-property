@@ -122,7 +122,7 @@ def backfill(table, limit=None, max_runtime_hours=3):
             addr = rec['address']
             sub = rec.get('suburb') or ''
             ci = rec.get('city') or ''
-            logger.info(f"[{i+1}/{total}] {addr} | sub={sub} | city={ci}")
+            logger.info(f"[{i+1}/{total}] {addr}, {sub}, {ci}")
 
             car = extract_garage_from_page(page, url)
             if car is not None:
