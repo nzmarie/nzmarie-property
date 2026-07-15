@@ -541,7 +541,7 @@ def scrape_rent_property_detail(page, relative_url):
             pass
 
         try:
-            image_urls = page.evaluate("""
+            image_urls = page.evaluate(r"""
                 () => {
                     const imgs = document.querySelectorAll('div[data-test="image"] img');
                     const urls = [];

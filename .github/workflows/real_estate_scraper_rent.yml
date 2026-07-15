@@ -83,7 +83,7 @@ jobs:
         run: python database/scripts/gh_lock_manager.py --action reset --task-id 4
 
       - name: Trigger next run if timed out (Breakpoint Resume)
-        if: success() && steps.check_lock.outputs.should_run == 'true'
+        if: always() && steps.check_lock.outputs.should_run == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

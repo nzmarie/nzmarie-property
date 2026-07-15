@@ -251,7 +251,7 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
 
         # 8. Cover Image and Gallery Images
         try:
-            image_urls = page.evaluate("""
+            image_urls = page.evaluate(r"""
                 () => {
                     const imgs = document.querySelectorAll('div[data-test="image"] > img');
                     const urls = [];
@@ -854,20 +854,6 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
         except:
              pass
         raise
-
-def handle_dialog(dialog):
-    try:
-        dialog.accept()
-    except:
-        pass
-
-def simulate_user_behavior(page):
-    try:
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(1)
-        page.evaluate("window.scrollTo(0, 0)")
-    except:
-        pass
 
 import argparse
 
