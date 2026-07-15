@@ -164,6 +164,8 @@ jobs:
           echo "  ✅ last_sold_price / last_sold_date"
           echo "  ✅ estimated_value_low / high"
           echo "  ✅ latitude / longitude"
+          echo "  ✅ property_history   (JSON history events)"
+          echo "  ✅ has_rental_history (Rented flag)"
           echo ""
           echo "Verify: check frontend property cards for images and data."
           echo "========================================="

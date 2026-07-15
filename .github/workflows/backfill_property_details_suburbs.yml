@@ -21,6 +21,11 @@ on:
         type: boolean
         required: false
         default: false
+      max_runtime_hours:
+        description: "Max runtime per run (hours)"
+        type: string
+        required: false
+        default: "5.5"
 
 permissions:
   contents: read
@@ -90,7 +95,7 @@ jobs:
         run: |
           SUBURBS="${{ inputs.suburbs }}"
           REGION="${{ inputs.region || 'auckland' }}"
-          MAX_RUNTIME="5.5"
+          MAX_RUNTIME="${{ inputs.max_runtime_hours || '5.5' }}"
 
           echo "========================================="
           echo "🔄 Starting BACKFILL Suburbs mode"
@@ -133,7 +138,7 @@ jobs:
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: token $GITHUB_TOKEN" \
               https://api.github.com/repos/${{ github.repository }}/actions/workflows/backfill_property_details_suburbs.yml/dispatches \
-              -d "{\"ref\":\"main\",\"inputs\":{\"suburbs\":\"${{ inputs.suburbs }}\",\"region\":\"${{ inputs.region }}\",\"force_run\":\"false\"}}"
+              -d "{\"ref\":\"main\",\"inputs\":{\"suburbs\":\"${{ inputs.suburbs }}\",\"region\":\"${{ inputs.region }}\",\"max_runtime_hours\":\"${{ inputs.max_runtime_hours }}\",\"force_run\":\"false\"}}"
             echo "✅ Next run triggered to continue from breakpoint"
           elif [ "$STATUS" = "complete" ]; then
             echo "✅ Backfill is complete. Scraping cycle finished!"
@@ -159,6 +164,8 @@ jobs:
           echo "  ✅ last_sold_price / last_sold_date"
           echo "  ✅ estimated_value_low / high"
           echo "  ✅ latitude / longitude"
+          echo "  ✅ property_history   (JSON history events)"
+          echo "  ✅ has_rental_history (Rented flag)"
           echo ""
           echo "Verify: check frontend property cards for images and data."
           echo "========================================="
