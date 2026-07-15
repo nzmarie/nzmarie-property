@@ -357,6 +357,11 @@ def fetch_property_links_rent(page, url):
         return []
 
     try:
+        simulate_user_behavior(page)
+    except Exception:
+        pass
+
+    try:
         links = page.evaluate("""
             () => {
                 const anchors = document.querySelectorAll('a[href*="/residential/rent/"]:not([href*="map"])');
@@ -710,25 +715,9 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.0):
                     update_last_processed_page(page_num)
                     continue
 
-            # If we've processed all pages but still have time, continue running
-            # But only if we have processed data
-            while has_data_to_process and (time.time() - start_time) < max_runtime_seconds:
-                logger.info("Processed all available pages. Waiting before next cycle.")
-                time.sleep(60)  # Wait for 1 minute before checking again
-                update_lock_timestamp()  # Update lock timestamp to indicate we're still running
-
-        if not timed_out and has_data_to_process:
-            try:
-                supabase = create_supabase_client()
-                supabase.table('scraping_progress').update({
-                    'status': 'complete',
-                    'updated_at': 'now()'
-                }).eq('id', 4).execute()
-                logger.info("Rent scraper task marked as complete.")
-            except Exception as e:
-                logger.error(f"Error marking rent scraper task as complete: {e}")
-        else:
-            logger.info(f"Keeping current status (timed_out={timed_out}, has_data={has_data_to_process})")
+            if not timed_out:
+                mark_complete()
+                logger.info("All pages processed. Task marked as complete.")
             
     except Exception as e:
         logger.error(f"Error in scraping process: {e}")
