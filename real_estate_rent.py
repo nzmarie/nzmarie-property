@@ -585,7 +585,7 @@ def check_real_estate_rent_in_supabase(address: str) -> bool:
         # If there's an error checking, we assume it doesn't exist to avoid missing data
         return False
 
-def scrape_properties(main_url, max_pages, max_runtime_hours=5.5):
+def scrape_properties(main_url, max_pages, max_runtime_hours=5.0):
     """
     Scrape properties with progress tracking and time limit.
     

@@ -731,17 +731,22 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
     
     has_data_to_process = False
     
+    # Context recycling config
+    PAGES_PER_CONTEXT = 20  # Recycle browser context every N pages to prevent memory leaks
+    
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage"]
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--disable-extensions"]
             )
             context = browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
             page = context.new_page()
             page.on("dialog", handle_dialog)
+            
+            pages_processed_in_context = 0
 
             page_num = start_page
             
@@ -755,7 +760,6 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
                 if time.time() - start_time > max_runtime_seconds:
                     logger.info(f"Max runtime reached for task {task_id}. Stopping.")
                     update_last_processed_page(page_num - 1, task_id)
-                    # Reset status to idle so it can pick up next time
                     try:
                         supabase = create_supabase_client()
                         supabase.table('scraping_progress').update({
@@ -766,6 +770,20 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
                         pass
                     return
 
+                # Recycle browser context periodically to prevent memory leaks
+                if pages_processed_in_context >= PAGES_PER_CONTEXT:
+                    logger.info(f"Recycling browser context after {pages_processed_in_context} pages")
+                    try:
+                        context.close()
+                    except:
+                        pass
+                    context = browser.new_context(
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    )
+                    page = context.new_page()
+                    page.on("dialog", handle_dialog)
+                    pages_processed_in_context = 0
+
                 # Update lock to show we are still alive
                 update_lock_timestamp(task_id)
                 
@@ -773,10 +791,20 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
                     url = f"{main_url}?page={page_num}"
                     print(f"\n[{region.upper()} {mode.upper()}] Scraping page {page_num}: {url}")
                     
-                    links = fetch_property_links(page, url, mode=mode)
+                    # Retry logic for page loading
+                    max_retries = 3
+                    links = []
+                    for attempt in range(max_retries):
+                        links = fetch_property_links(page, url, mode=mode)
+                        if links:
+                            break
+                        elif attempt < max_retries - 1:
+                            logger.warning(f"Page {page_num} returned 0 links (attempt {attempt+1}/{max_retries}), retrying...")
+                            time.sleep(random.uniform(3, 5))
                     
                     if links:
                         has_data_to_process = True
+                        pages_processed_in_context += 1
                         print(f"Found {len(links)} links on page {page_num}")
                         
                         for link in links:
@@ -884,7 +912,7 @@ def main():
         for task in tasks_to_run:
             try:
                 logger.info(f"Processing Task: {task['region']} - {task['mode']} (ID: {task['id']})")
-                scrape_properties(task, max_pages, max_runtime_hours=5.5)
+                scrape_properties(task, max_pages, max_runtime_hours=5.0)
                 
             except Exception as e:
                 logger.error(f"Task {task['id']} failed: {e}")
