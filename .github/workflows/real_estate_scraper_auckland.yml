@@ -28,7 +28,7 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 340
+    timeout-minutes: 360
 
     concurrency:
       group: scrape-realestate-auckland
@@ -41,6 +41,8 @@ jobs:
       GITHUB_REPOSITORY: ${{ github.repository }}
       PYTHONPATH: .
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PLAYWRIGHT_TIMEOUT: "120000"
+      PLAYWRIGHT_NAVIGATION_TIMEOUT: "120000"
 
     steps:
       - name: Checkout code
@@ -95,6 +97,9 @@ jobs:
       - name: Run scraper (auckland)
         if: steps.check_lock.outputs.should_run == 'true'
         run: python real_estate_auckland.py --task_id 2
+        env:
+          PLAYWRIGHT_TIMEOUT: "120000"
+          PLAYWRIGHT_NAVIGATION_TIMEOUT: "120000"
 
       - name: Reset status on completion or failure
         if: always() && steps.check_lock.outputs.should_run == 'true'

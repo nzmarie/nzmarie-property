@@ -277,24 +277,51 @@ def handle_dialog(dialog):
 def scroll_to_bottom(page):
     """
     Scroll to the bottom of the page to load all content.
+    Handles navigation that might occur during scrolling.
     """
     try:
-        print("Starting simulated mouse scroll operation...")
+        print("Starting to simulate mouse scrolling...")
         last_height = page.evaluate("document.body.scrollHeight")
-        while True:
-            print(f"  - Current page height: {last_height}, continuing to scroll down...")
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        scroll_attempts = 0
+        max_scroll_attempts = 50
+        
+        while scroll_attempts < max_scroll_attempts:
+            print(f"  - Current page height: {last_height}, continuing to scroll...")
+            
+            # Check if page is still valid before scrolling
+            try:
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            except Exception as e:
+                if "Execution context was destroyed" in str(e) or "context" in str(e).lower():
+                    logger.warning("Page context destroyed during scroll, page may have navigated")
+                    break
+                raise
+            
             time.sleep(random.uniform(1, 2))  # Wait for page to load
-            new_height = page.evaluate("document.body.scrollHeight")
+            
+            # Check if page is still valid before evaluating
+            try:
+                new_height = page.evaluate("document.body.scrollHeight")
+            except Exception as e:
+                if "Execution context was destroyed" in str(e) or "context" in str(e).lower():
+                    logger.warning("Page context destroyed during height check, page may have navigated")
+                    break
+                raise
+            
             if new_height == last_height:
                 print("  - Reached bottom of page")
                 break
             last_height = new_height
+            scroll_attempts += 1
 
             # Check if pagination navigation appeared
-            if page.query_selector('nav[aria-label="Pagination"]') or page.query_selector('div[class*="pagination"]'):
-                print("  - Pagination navigation detected, stopping scroll")
-                break
+            try:
+                if page.query_selector('nav[aria-label="Pagination"]') or page.query_selector('div[class*="pagination"]'):
+                    print("  - Detected pagination navigation, stopping scroll")
+                    break
+            except Exception:
+                pass  # Ignore selector errors
+                
     except Exception as e:
         logger.error(f"Error scrolling to bottom: {e}")
         logger.error(f"Error details: {traceback.format_exc()}")
@@ -348,35 +375,47 @@ def fetch_property_links_rent(page, url):
     Fetch property detail page links from a rent listing page.
     Returns list of relative URL strings like /residential/rent/...
     """
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=60000)
-    except TimeoutError as e:
-        logger.warning(f"Timeout while loading {url}. Continuing with partial page load. Error: {e}")
-    except Exception as e:
-        logger.error(f"Error navigating to {url}: {e}")
-        return []
-
-    try:
-        simulate_user_behavior(page)
-    except Exception:
-        pass
-
-    try:
-        links = page.evaluate("""
-            () => {
-                const anchors = document.querySelectorAll('a[href*="/residential/rent/"]:not([href*="map"])');
-                return Array.from(anchors).map(el => el.getAttribute('href')).filter(Boolean);
-            }
-        """)
-        unique_links = list(set([
-            l for l in links
-            if l and '/residential/rent/' in l and '?' not in l and re.search(r'/\d{6,}/', l)
-        ]))
-        logger.info(f"Found {len(unique_links)} rental property links on page.")
-        return unique_links
-    except Exception as e:
-        logger.error(f"An error occurred while fetching rent links from {url}: {e}")
-        return []
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Loading page {url} (attempt {attempt + 1}/{max_retries})")
+            # Use networkidle to wait for all network requests to finish
+            page.goto(url, wait_until="networkidle", timeout=90000)
+            
+            # Wait for property cards to be visible
+            try:
+                page.wait_for_selector('a[href*="/residential/rent/"]', timeout=15000)
+            except Exception:
+                logger.warning("Property links selector not found, continuing anyway")
+            
+            # Small delay to ensure page is fully rendered
+            time.sleep(random.uniform(2, 4))
+            
+            # Simulate user behavior to load all content
+            simulate_user_behavior(page)
+            
+            links = page.evaluate("""
+                () => {
+                    const anchors = document.querySelectorAll('a[href*="/residential/rent/"]:not([href*="map"])');
+                    return Array.from(anchors).map(el => el.getAttribute('href')).filter(Boolean);
+                }
+            """)
+            unique_links = list(set([
+                l for l in links
+                if l and '/residential/rent/' in l and '?' not in l and re.search(r'/\d{6,}/', l)
+            ]))
+            logger.info(f"Found {len(unique_links)} rental property links on page.")
+            return unique_links
+            
+        except Exception as e:
+            logger.warning(f"Attempt {attempt + 1} failed for {url}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(random.uniform(5, 10))
+            else:
+                logger.error(f"All attempts failed for {url}: {e}")
+                return []
+    
+    return []
 
 def scrape_rent_property_detail(page, relative_url):
     """
@@ -409,10 +448,10 @@ def scrape_rent_property_detail(page, relative_url):
 
         time.sleep(random.uniform(2, 4))
         logger.info(f"Navigating to rental detail page: {full_url}")
-        page.goto(full_url, wait_until="domcontentloaded", timeout=45000)
+        page.goto(full_url, wait_until="networkidle", timeout=90000)
         # Wait for description to render
         try:
-            page.wait_for_selector('[data-test="description-content__description"]', timeout=8000)
+            page.wait_for_selector('[data-test="description-content__description"]', timeout=15000)
         except Exception:
             pass
 

@@ -35,6 +35,8 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       PYTHONPATH: .
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PLAYWRIGHT_TIMEOUT: "120000"
+      PLAYWRIGHT_NAVIGATION_TIMEOUT: "120000"
 
     steps:
       - name: Checkout code
