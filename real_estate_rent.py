@@ -379,8 +379,8 @@ def fetch_property_links_rent(page, url):
     for attempt in range(max_retries):
         try:
             logger.info(f"Loading page {url} (attempt {attempt + 1}/{max_retries})")
-            # domcontentloaded avoids hangs waiting for persistent analytics/ads network
-            page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            # 30s timeout: if the site is rate-limiting, waiting longer won't help
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
             
             # Wait for property cards to be visible
             try:
@@ -448,7 +448,7 @@ def scrape_rent_property_detail(page, relative_url):
 
         time.sleep(random.uniform(2, 4))
         logger.info(f"Navigating to rental detail page: {full_url}")
-        page.goto(full_url, wait_until="domcontentloaded", timeout=90000)
+        page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
         # Wait for description to render
         try:
             page.wait_for_selector('[data-test="description-content__description"]', timeout=15000)
@@ -689,14 +689,20 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.0):
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-gpu",
+                    "--disable-extensions",
                 ],
             )
 
             context = browser.new_context(
-                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
             page = context.new_page()
             page.on("dialog", handle_dialog)
+
+            PAGES_PER_CONTEXT = 20
+            pages_processed_in_context = 0
+            consecutive_failures = 0
 
             timed_out = False
             for page_num in range(start_page + 1, max_pages + 1):
@@ -717,6 +723,20 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.0):
                     timed_out = True
                     break
 
+                # Recycle browser context periodically to prevent memory leaks
+                if pages_processed_in_context >= PAGES_PER_CONTEXT:
+                    logger.info(f"Recycling browser context after {pages_processed_in_context} pages")
+                    try:
+                        context.close()
+                    except:
+                        pass
+                    context = browser.new_context(
+                        user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    )
+                    page = context.new_page()
+                    page.on("dialog", handle_dialog)
+                    pages_processed_in_context = 0
+
                 update_lock_timestamp()
 
                 try:
@@ -726,7 +746,9 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.0):
                     links = fetch_property_links_rent(page, url)
 
                     if links:
+                        consecutive_failures = 0
                         has_data_to_process = True
+                        pages_processed_in_context += 1
                         print(f"Found {len(links)} rental links on page {page_num}")
 
                         for link in links:
@@ -740,7 +762,23 @@ def scrape_properties(main_url, max_pages, max_runtime_hours=5.0):
                             else:
                                 logger.warning(f"[SAVE] FAIL | no address scraped | {link}")
                     else:
-                        print(f"No rental links found on page {page_num}. Continuing.")
+                        consecutive_failures += 1
+                        print(f"No rental links found on page {page_num}. (failure #{consecutive_failures} consecutive)")
+                        if consecutive_failures >= 3:
+                            backoff = random.uniform(300, 600)
+                            logger.warning(f"Rate limiting suspected. Pausing for {backoff:.0f}s, then recycling browser context...")
+                            time.sleep(backoff)
+                            try:
+                                context.close()
+                            except:
+                                pass
+                            context = browser.new_context(
+                                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                            )
+                            page = context.new_page()
+                            page.on("dialog", handle_dialog)
+                            pages_processed_in_context = 0
+                            consecutive_failures = 0
 
                     update_last_processed_page(page_num)
 

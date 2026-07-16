@@ -70,7 +70,7 @@ class BaseScraper:
         except Exception as e:
             logger.error(f"Failed to update progress status for {task_key}: {e}")
 
-    async def safe_goto(self, page, url, wait_until="domcontentloaded", timeout=90000, retries=3):
+    async def safe_goto(self, page, url, wait_until="domcontentloaded", timeout=30000, retries=3):
         """Navigate to a URL with retries and random delays."""
         for attempt in range(retries):
             try:

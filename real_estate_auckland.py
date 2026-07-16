@@ -61,8 +61,7 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
         # Navigate to detail page — wait for description to render
         time.sleep(random.uniform(2, 4))
         logger.info(f"Navigating to detail page: {full_url}")
-        page.goto(full_url, wait_until="domcontentloaded", timeout=90000)
-        # Wait for description section to be present (React-rendered)
+        page.goto(full_url, wait_until="domcontentloaded", timeout=30000)
         try:
             page.wait_for_selector('[data-test="description-content__description"]', timeout=15000)
         except Exception:
@@ -286,8 +285,8 @@ def fetch_property_links(page, url, mode='buy'):
     for attempt in range(max_retries):
         try:
             logger.info(f"Loading page {url} (attempt {attempt + 1}/{max_retries})")
-            # domcontentloaded avoids hangs waiting for persistent analytics/ads network
-            page.goto(url, wait_until="domcontentloaded", timeout=90000)
+            # 30s timeout: if the site is rate-limiting, waiting longer won't help
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
             
             # Wait for property cards to be visible
             try:
@@ -661,7 +660,7 @@ def fetch_addresses(page, url):
     Fetch addresses from the given URL.
     """
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=90000)
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
     except TimeoutError as e:
         logger.warning(f"Timeout while loading {url}. Continuing with partial page load. Error: {e}")
     except Exception as e:
@@ -791,6 +790,7 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
             page.on("dialog", handle_dialog)
             
             pages_processed_in_context = 0
+            consecutive_failures = 0
 
             page_num = start_page
             
@@ -835,18 +835,11 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
                     url = f"{main_url}?page={page_num}"
                     print(f"\n[{region.upper()} {mode.upper()}] Scraping page {page_num}: {url}")
                     
-                    # Retry logic for page loading
-                    max_retries = 3
-                    links = []
-                    for attempt in range(max_retries):
-                        links = fetch_property_links(page, url, mode=mode)
-                        if links:
-                            break
-                        elif attempt < max_retries - 1:
-                            logger.warning(f"Page {page_num} returned 0 links (attempt {attempt+1}/{max_retries}), retrying...")
-                            time.sleep(random.uniform(3, 5))
+                    # fetch_property_links has its own 3 retries internally with 30s timeout each
+                    links = fetch_property_links(page, url, mode=mode)
                     
                     if links:
+                        consecutive_failures = 0
                         has_data_to_process = True
                         pages_processed_in_context += 1
                         print(f"Found {len(links)} links on page {page_num}")
@@ -868,7 +861,23 @@ def scrape_properties(task_config, max_pages, max_runtime_hours=5.5):
                                 logger.warning(f"[SAVE] FAIL | no address scraped | {link}")
                                 
                     else:
-                        print(f"No links found on page {page_num}. Continuing.")
+                        consecutive_failures += 1
+                        print(f"No links found on page {page_num}. (failure #{consecutive_failures} consecutive)")
+                        if consecutive_failures >= 3:
+                            backoff = random.uniform(300, 600)
+                            logger.warning(f"Rate limiting suspected. Pausing for {backoff:.0f}s, then recycling browser context...")
+                            time.sleep(backoff)
+                            try:
+                                context.close()
+                            except:
+                                pass
+                            context = browser.new_context(
+                                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                            )
+                            page = context.new_page()
+                            page.on("dialog", handle_dialog)
+                            pages_processed_in_context = 0
+                            consecutive_failures = 0
                     
                     update_last_processed_page(page_num, task_id)
                     
