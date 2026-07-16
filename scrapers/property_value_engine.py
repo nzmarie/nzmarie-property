@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 from scrapers.base_scraper import BaseScraper
 from scrapers.property_value_parser import PropertyValueParser
 from utils.database import db
-from utils.address_helper import get_canonical_address
+from utils.address_helper import generate_address_fingerprint
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -113,16 +113,20 @@ class PropertyValueEngine(BaseScraper):
 
         batch_params = []
         for p in properties_data:
-            fingerprint = get_canonical_address(p['address'])
+            # Mandatory fingerprint per spec: address|suburb -> lowercase -> [a-z0-9|] only
+            fingerprint = generate_address_fingerprint(p['address'], p.get('suburb'))
+            if not fingerprint:
+                logger.error(f"Refusing to insert property with NULL fingerprint (address={p.get('address')}). Skipping.")
+                continue
             batch_params.append((
-                p['address'], p['suburb'], p['city'], self.region, 
+                p['address'], p['suburb'], p['city'], self.region,
                 p['property_url'], fingerprint
             ))
 
         sql = """
             INSERT INTO properties (id, address, suburb, city, region, property_url, address_fingerprint, created_at)
             VALUES (md5(random()::text || clock_timestamp()::text), %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (address_fingerprint) WHERE address_fingerprint IS NOT NULL DO UPDATE
+            ON CONFLICT (address_fingerprint) DO UPDATE
             SET property_url = EXCLUDED.property_url
             RETURNING address, suburb, (created_at >= CURRENT_TIMESTAMP - INTERVAL '1 second') as is_new
         """

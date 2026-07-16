@@ -164,8 +164,37 @@ def parse_nz_address(raw_address):
         "suburb": suburb,
         "city": city,
     }
-
 import re
+
+
+def generate_address_fingerprint(address, suburb=None):
+    """
+    Generate a deterministic address fingerprint for the `properties` table.
+
+    Rule (per data-pipeline spec):
+      1. Concatenate address (street) + "|" + suburb
+      2. Lowercase
+      3. Strip all characters except [a-z0-9|]
+         (spaces, commas, slashes, dots, etc. are all removed)
+
+    Example:
+      "145 Albany Highway" + "Albany"  ->  "145albanyhighway|albany"
+
+    The fingerprint is NEVER None — callers must supply a valid address.
+    If address is missing/empty, this returns None so the caller can
+    refuse to insert (NULL fingerprint is a hard bug per spec).
+    """
+    if not address:
+        return None
+    if suburb:
+        raw = f"{address}|{suburb}"
+    else:
+        raw = str(address)
+    raw = raw.lower()
+    # Keep only letters, digits, and the pipe separator
+    fingerprint = re.sub(r'[^a-z0-9|]', '', raw)
+    return fingerprint or None
+
 
 def get_canonical_address(address):
     """

@@ -2,7 +2,7 @@ from datetime import datetime
 import os
 import logging
 import json
-from utils.address_helper import get_canonical_address
+from utils.address_helper import generate_address_fingerprint
 from utils.database import db
 
 # Set up logging
@@ -293,7 +293,11 @@ def clean_property_data(property_data):
         if field in property_data:
             property_data[field] = clean_price(property_data[field])
     if 'address' in property_data:
-        property_data['address_fingerprint'] = get_canonical_address(property_data['address'])
+        # Mandatory fingerprint per spec: address|suburb -> lowercase -> [a-z0-9|] only.
+        # Falls back to address-only only if suburb is missing (should not happen for properties).
+        property_data['address_fingerprint'] = generate_address_fingerprint(
+            property_data['address'], property_data.get('suburb')
+        )
         
     if 'id' not in property_data:
         # Generate a deterministic ID based on address_fingerprint (which has a UNIQUE constraint)
@@ -400,8 +404,9 @@ def check_property_exists(address: str) -> bool:
 
 def insert_real_estate(address: str, status: str, latitude: float = None, longitude: float = None) -> bool:
     try:
+        fingerprint = generate_address_fingerprint(address, None)
         db.execute("INSERT INTO real_estate (address, address_fingerprint, status, latitude, longitude) VALUES (%s, %s, %s, %s, %s)", 
-                   (address, get_canonical_address(address), status, latitude, longitude))
+                   (address, fingerprint, status, latitude, longitude))
         return True
     except Exception as e:
         if "unique constraint" in str(e).lower() or "duplicate key" in str(e).lower():
@@ -410,7 +415,7 @@ def insert_real_estate(address: str, status: str, latitude: float = None, longit
 
 def insert_real_estate_rent(address: str, status: str, latitude: float = None, longitude: float = None) -> bool:
     try:
-        fingerprint = get_canonical_address(address)
+        fingerprint = generate_address_fingerprint(address, None)
         try:
             db.execute(
                 "INSERT INTO real_estate_rent (address, address_fingerprint, status, latitude, longitude) VALUES (%s, %s, %s, %s, %s)",
@@ -441,34 +446,37 @@ create_client = create_supabase_client
 Client = SupabaseShim
 
 def _execute_upsert(table_name: str, data: dict) -> bool:
+    """
+    Idempotent upsert into `real_estate` / `real_estate_rent` keyed by address_fingerprint.
+
+    Per spec:
+      - fingerprint = address|suburb -> lowercase -> [a-z0-9|] only (NO property_type)
+      - fingerprint is MANDATORY (never NULL)
+      - uses ON CONFLICT (address_fingerprint) DO UPDATE for idempotency
+    """
     try:
         if 'address' in data:
-            data['address_fingerprint'] = get_canonical_address(data['address'])
+            fingerprint = generate_address_fingerprint(data['address'], data.get('suburb'))
+            if not fingerprint:
+                logger.error(
+                    f"Refusing to upsert into {table_name} with NULL address_fingerprint "
+                    f"(address={data.get('address')!r}). Skipping to avoid duplicate rows."
+                )
+                return False
+            data['address_fingerprint'] = fingerprint
+
         columns = list(data.keys())
         placeholders = ["%s"] * len(columns)
-        insert_sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({', '.join(placeholders)})"
-        try:
-            db.execute(insert_sql, list(data.values()))
-            return True
-        except Exception as insert_err:
-            err_msg = str(insert_err).lower()
-            if "unique constraint" in err_msg or "duplicate key" in err_msg:
-                fingerprint = data.get('address_fingerprint')
-                if fingerprint:
-                    update_data = {k: v for k, v in data.items() if k not in ('id', 'address_fingerprint')}
-                    set_clauses = []
-                    params = []
-                    for k, v in update_data.items():
-                        if k in ('latitude', 'longitude'):
-                            set_clauses.append(f"{k} = COALESCE(%s, {k})")
-                        else:
-                            set_clauses.append(f"{k} = %s")
-                        params.append(v)
-                    params.append(fingerprint)
-                    update_sql = f"UPDATE {table_name} SET {', '.join(set_clauses)} WHERE address_fingerprint = %s"
-                    db.execute(update_sql, params)
-                    return True
-            raise
+        # Update all columns except the surrogate id and the conflict key
+        update_cols = [c for c in columns if c not in ('id', 'address_fingerprint')]
+        update_clause = ", ".join([f"{c} = EXCLUDED.{c}" for c in update_cols])
+        insert_sql = (
+            f"INSERT INTO {table_name} ({', '.join(columns)}) "
+            f"VALUES ({', '.join(placeholders)}) "
+            f"ON CONFLICT (address_fingerprint) DO UPDATE SET {update_clause}"
+        )
+        db.execute(insert_sql, list(data.values()))
+        return True
     except Exception as e:
         logger.error(f"Error upserting into {table_name}: {e}")
         return False
