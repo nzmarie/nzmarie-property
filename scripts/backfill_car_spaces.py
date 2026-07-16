@@ -37,7 +37,7 @@ def get_records_to_backfill(table, limit=None):
 def extract_garage_from_page(page, url):
     """Visit detail page and extract Garage count from features-icons."""
     try:
-        page.goto(url, wait_until="networkidle", timeout=90000)
+        page.goto(url, wait_until="domcontentloaded", timeout=90000)
         time.sleep(random.uniform(1.5, 3))
         try:
             page.wait_for_selector('div[data-test="features-icons"]', timeout=15000)

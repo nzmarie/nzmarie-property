@@ -61,7 +61,7 @@ def scrape_property_detail(page, relative_url, region='auckland', mode='buy'):
         # Navigate to detail page — wait for description to render
         time.sleep(random.uniform(2, 4))
         logger.info(f"Navigating to detail page: {full_url}")
-        page.goto(full_url, wait_until="networkidle", timeout=90000)
+        page.goto(full_url, wait_until="domcontentloaded", timeout=90000)
         # Wait for description section to be present (React-rendered)
         try:
             page.wait_for_selector('[data-test="description-content__description"]', timeout=15000)
@@ -286,8 +286,8 @@ def fetch_property_links(page, url, mode='buy'):
     for attempt in range(max_retries):
         try:
             logger.info(f"Loading page {url} (attempt {attempt + 1}/{max_retries})")
-            # Use networkidle to wait for all network requests to finish
-            page.goto(url, wait_until="networkidle", timeout=90000)
+            # domcontentloaded avoids hangs waiting for persistent analytics/ads network
+            page.goto(url, wait_until="domcontentloaded", timeout=90000)
             
             # Wait for property cards to be visible
             try:
@@ -661,7 +661,7 @@ def fetch_addresses(page, url):
     Fetch addresses from the given URL.
     """
     try:
-        page.goto(url, wait_until="networkidle", timeout=90000)
+        page.goto(url, wait_until="domcontentloaded", timeout=90000)
     except TimeoutError as e:
         logger.warning(f"Timeout while loading {url}. Continuing with partial page load. Error: {e}")
     except Exception as e:

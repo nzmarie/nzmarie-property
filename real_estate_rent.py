@@ -379,8 +379,8 @@ def fetch_property_links_rent(page, url):
     for attempt in range(max_retries):
         try:
             logger.info(f"Loading page {url} (attempt {attempt + 1}/{max_retries})")
-            # Use networkidle to wait for all network requests to finish
-            page.goto(url, wait_until="networkidle", timeout=90000)
+            # domcontentloaded avoids hangs waiting for persistent analytics/ads network
+            page.goto(url, wait_until="domcontentloaded", timeout=90000)
             
             # Wait for property cards to be visible
             try:
@@ -448,7 +448,7 @@ def scrape_rent_property_detail(page, relative_url):
 
         time.sleep(random.uniform(2, 4))
         logger.info(f"Navigating to rental detail page: {full_url}")
-        page.goto(full_url, wait_until="networkidle", timeout=90000)
+        page.goto(full_url, wait_until="domcontentloaded", timeout=90000)
         # Wait for description to render
         try:
             page.wait_for_selector('[data-test="description-content__description"]', timeout=15000)
