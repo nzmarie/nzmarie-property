@@ -164,93 +164,32 @@ def parse_nz_address(raw_address):
         "suburb": suburb,
         "city": city,
     }
-import re
 
 
 def generate_address_fingerprint(address, suburb=None):
     """
-    Generate a deterministic address fingerprint for the `properties` table.
+    Generate a deterministic address fingerprint.
 
-    Rule (per data-pipeline spec):
-      1. Concatenate address (street) + "|" + suburb
-      2. Lowercase
-      3. Strip all characters except [a-z0-9|]
-         (spaces, commas, slashes, dots, etc. are all removed)
+    Normalizes the address first (Rd->Road, St->Street, Unit formatting, etc.)
+    so that "3 Pearl Gr" and "3 Pearl Grove" produce the same fingerprint.
 
-    Example:
-      "145 Albany Highway" + "Albany"  ->  "145albanyhighway|albany"
+    Rule:
+      1. Normalize address via get_canonical_address
+      2. Concatenate normalized_address + "|" + suburb
+      3. Lowercase
+      4. Strip all characters except [a-z0-9|]
 
-    The fingerprint is NEVER None — callers must supply a valid address.
-    If address is missing/empty, this returns None so the caller can
-    refuse to insert (NULL fingerprint is a hard bug per spec).
+    Returns None if address is empty (caller must refuse to insert).
     """
     if not address:
+        return None
+    normalized = get_canonical_address(address)
+    if not normalized:
         return None
     if suburb:
-        raw = f"{address}|{suburb}"
+        raw = f"{normalized}|{suburb}"
     else:
-        raw = str(address)
+        raw = normalized
     raw = raw.lower()
-    # Keep only letters, digits, and the pipe separator
     fingerprint = re.sub(r'[^a-z0-9|]', '', raw)
     return fingerprint or None
-
-
-def get_canonical_address(address):
-    """
-    Normalization algorithm for NZ addresses: 
-    Removes postcodes, standardizes suffixes, align units, and cleans noise.
-    """
-    if not address:
-        return None
-        
-    lower_addr = address.lower()
-    
-    # Check for invalid addresses
-    if any(k in lower_addr for k in ["withheld", "hidden", "unknown", "address upon request"]):
-        return None
-    
-    # 1. Basic cleaning: replace commas with spaces and strip
-    addr = lower_addr.replace(",", " ").strip()
-    
-    # 2. Remove trailing 4-digit postcode (e.g., "Auckland 1010" -> "Auckland")
-    addr = re.sub(r'\s\d{4}$', '', addr)
-    
-    # 3. Suffix Full-Name Mapping
-    # We use a dictionary for common NZ street suffixes
-    replacements = {
-        r'\brd\b': 'road',
-        r'\bst\b': 'street',
-        r'\bave\b': 'avenue',
-        r'\bhwy\b': 'highway',
-        r'\bpl\b': 'place',
-        r'\bdr\b': 'drive',
-        r'\bct\b': 'court',
-        r'\bter\b': 'terrace',
-        r'\bln\b': 'lane',
-        r'\bcres\b': 'crescent',
-        r'\bmt\b': 'mount',
-        r'\bpt\b': 'point',
-        r'\bcl\b': 'close',
-        r'\bgr\b': 'grove',
-        r'\bpde\b': 'parade',
-        r'\bsq\b': 'square',
-        r'\btce\b': 'terrace'
-    }
-    for pattern, replacement in replacements.items():
-        addr = re.sub(pattern, replacement, addr)
-        
-    # 4. Standardize Unit/Flat numbering (e.g., "Unit 1 35 Street" -> "1/35 Street")
-    # Handle "Unit X, Y Street" or "Flat X, Y Street" or "1 of 23 Street"
-    addr = re.sub(r'\b(?:unit|flat|u|f)\s*([a-z0-9]+)\s*(?:of|/|,)?\s*', r'\1/', addr)
-    addr = re.sub(r'\s*/\s*', '/', addr) # Clean up spaces around slashes
-    
-    # 5. Remove city noise (Auckland/Wellington) if it's at the end or preceded by space
-    # Often scrapers add " Auckland" at the end.
-    addr = re.sub(r'\b(auckland|wellington|christchurch|hamilton|tauranga)\b', '', addr)
-    
-    # 6. Final cleanup: Keep only alphanumeric and slashes
-    addr = re.sub(r'[^a-z0-9/ ]', ' ', addr)
-    
-    # 7. Normalize whitespace
-    return " ".join(addr.split())

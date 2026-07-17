@@ -127,7 +127,8 @@ class PropertyValueEngine(BaseScraper):
             INSERT INTO properties (id, address, suburb, city, region, property_url, address_fingerprint, created_at)
             VALUES (md5(random()::text || clock_timestamp()::text), %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (address_fingerprint) DO UPDATE
-            SET property_url = EXCLUDED.property_url
+            SET address = EXCLUDED.address, suburb = EXCLUDED.suburb, city = EXCLUDED.city,
+                region = EXCLUDED.region, property_url = EXCLUDED.property_url
             RETURNING address, suburb, (created_at >= CURRENT_TIMESTAMP - INTERVAL '1 second') as is_new
         """
         
