@@ -174,11 +174,14 @@ class PropertyValueEngine(BaseScraper):
                 logger.info(f"Found {len(suburb_links)} suburbs in TA: {ta_name}")
 
                 # Apply suburb filter if specified
+                # Use partial match: extracted name like "birkenhead north shore" should still match "birkenhead"
                 if self.suburbs_filter:
-                    suburb_links = [
-                        link for link in suburb_links
-                        if self._extract_suburb_name(link).lower() in self.suburbs_filter
-                    ]
+                    filtered = []
+                    for link in suburb_links:
+                        extracted = self._extract_suburb_name(link).lower()
+                        if any(sub in extracted or extracted in sub for sub in self.suburbs_filter):
+                            filtered.append(link)
+                    suburb_links = filtered
                     logger.info(f"After suburb filter: {len(suburb_links)} suburbs remaining")
                     if not suburb_links:
                         continue
@@ -299,7 +302,7 @@ class PropertyValueEngine(BaseScraper):
                                    OR property_history IS NULL
                                    OR has_rental_history IS NULL)
                               AND region = %s AND LOWER(suburb) = ANY(%s)
-                            ORDER BY created_at ASC LIMIT 50
+                            ORDER BY random() ASC LIMIT 50
                         """
                         properties = db.query(sql, (self.region, self.suburbs_filter))
                     else:
@@ -309,7 +312,7 @@ class PropertyValueEngine(BaseScraper):
                                    OR property_history IS NULL
                                    OR has_rental_history IS NULL)
                               AND region = %s
-                            ORDER BY created_at ASC LIMIT 50
+                            ORDER BY random() ASC LIMIT 50
                         """
                         properties = db.query(sql, (self.region,))
                 except Exception as e:
