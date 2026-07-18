@@ -201,7 +201,7 @@ class PropertyValueEngine(BaseScraper):
                     resume_page = last_page if (i == last_ta_idx and j == last_sub_idx) else 1
                     
                     await self._scrape_suburb_properties(page, self.base_url + sub_link, suburb_name, ta_name, i, j, resume_page)
-                    
+
                     if self.should_stop(): return
 
                     # Update state after each suburb (next suburb, page 1)
@@ -221,9 +221,11 @@ class PropertyValueEngine(BaseScraper):
         logger.info(f"Scraping suburb: {suburb_name} from page {start_page}")
         current_url = f"{suburb_url}?page={start_page}" if start_page > 1 else suburb_url
         page_num = start_page
+        stopped_early = False
 
         while current_url:
             if self.should_stop(): 
+                stopped_early = True
                 # Save current page progress before stopping
                 if self.task_id:
                     new_state = json.dumps({"ta_idx": ta_idx, "sub_idx": sub_idx, "page_num": page_num})
@@ -286,6 +288,13 @@ class PropertyValueEngine(BaseScraper):
                 logger.info(f"  Moving to page {page_num}...")
             else:
                 current_url = None
+
+        # All pages processed for this suburb - advance to next suburb
+        # This ensures breakpoint resume continues with the next suburb even
+        # if should_stop() fires in the outer loop before the state update.
+        if not stopped_early and self.task_id:
+            new_state = json.dumps({"ta_idx": ta_idx, "sub_idx": sub_idx + 1, "page_num": 1})
+            await self.set_status_by_id(self.task_id, "running", new_state)
 
     async def run_backfill(self):
         logger.info(f"Starting Backfill Mode for region: {self.region}")

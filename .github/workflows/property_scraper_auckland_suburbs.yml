@@ -189,9 +189,6 @@ jobs:
             echo "✅ Task ${{ steps.task_id.outputs.task_id }} is complete. Scraping cycle finished!"
           elif [ "$RESULT" = "HAS_PROGRESS" ]; then
             NEXT_MODE="${{ inputs.mode }}"
-            if [ "${{ inputs.mode }}" = "discovery" ]; then
-              NEXT_MODE="backfill"
-            fi
             echo "🔄 Task has saved progress. Triggering next run to resume from breakpoint in $NEXT_MODE mode..."
             curl -X POST \
               -H "Accept: application/vnd.github.v3+json" \
