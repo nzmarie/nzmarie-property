@@ -1,0 +1,125 @@
+name: Backfill RealEstate History
+
+on:
+  workflow_dispatch:
+    inputs:
+      table:
+        description: "Table to backfill"
+        required: true
+        default: "real_estate"
+        type: choice
+        options:
+          - real_estate
+          - real_estate_rent
+          - all
+      limit:
+        description: "Max records (empty = all)"
+        required: false
+        default: ""
+        type: string
+      max_runtime_hours:
+        description: "Max runtime (hours)"
+        required: false
+        default: "5"
+        type: string
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    concurrency:
+      group: backfill-realestate-history
+      cancel-in-progress: false
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PYTHONPATH: .
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      PLAYWRIGHT_TIMEOUT: "120000"
+      PLAYWRIGHT_NAVIGATION_TIMEOUT: "120000"
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          playwright install --with-deps chromium
+
+      - name: Run database migrations
+        run: |
+          python database/scripts/run_migrations.py
+
+      - name: Determine Task ID
+        id: task_id
+        run: |
+          echo "task_id=7" >> $GITHUB_OUTPUT
+          echo "Assigned Task ID 7 for backfill_realestate"
+
+      - name: Check and acquire lock
+        id: check_lock
+        run: |
+          python database/scripts/gh_lock_manager.py --action check --task-id ${{ steps.task_id.outputs.task_id }}
+
+      - name: Set status to running
+        if: steps.check_lock.outputs.should_run == 'true'
+        run: python database/scripts/gh_lock_manager.py --action running --task-id ${{ steps.task_id.outputs.task_id }}
+
+      - name: Run backfill
+        if: steps.check_lock.outputs.should_run == 'true'
+        run: |
+          ARGS="--table ${{ inputs.table }} --max-runtime ${{ inputs.max_runtime_hours }} --task-id ${{ steps.task_id.outputs.task_id }}"
+          if [ -n "${{ inputs.limit }}" ]; then
+            ARGS="$ARGS --limit ${{ inputs.limit }}"
+          fi
+          python scripts/backfill_realestate.py $ARGS
+
+      - name: Reset status on completion or failure
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        run: python database/scripts/gh_lock_manager.py --action reset --task-id ${{ steps.task_id.outputs.task_id }}
+
+      - name: Trigger next run if not complete (Breakpoint Resume)
+        if: always() && steps.check_lock.outputs.should_run == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          STATUS=$(python -c "
+          import sys; sys.path.append('.')
+          from utils.database import db
+          rows = db.query('SELECT status FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
+          print(rows[0]['status'] if rows else 'unknown')
+          ")
+
+          if [ "$STATUS" = "idle" ]; then
+            echo "Task ${{ steps.task_id.outputs.task_id }} is 'idle' (timed out). Triggering next run to resume..."
+            curl -X POST \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              https://api.github.com/repos/${{ github.repository }}/actions/workflows/backfill_realestate.yml/dispatches \
+              -d "{\"ref\":\"main\",\"inputs\":{\"table\":\"${{ inputs.table }}\",\"limit\":\"${{ inputs.limit }}\",\"max_runtime_hours\":\"${{ inputs.max_runtime_hours }}\"}}"
+          elif [ "$STATUS" = "complete" ]; then
+            echo "Task ${{ steps.task_id.outputs.task_id }} is 'complete'. Backfill cycle finished!"
+          else
+            echo "Task ${{ steps.task_id.outputs.task_id }} is '$STATUS'. No auto-trigger performed."
+          fi
+
+      - name: Upload error screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backfill-realestate-error-screenshots
+          path: screenshots/
+          retention-days: 7
