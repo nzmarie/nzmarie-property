@@ -220,14 +220,18 @@ def main():
         default="all",
         help="Table to backfill",
     )
-    parser.add_argument("--limit", type=int, help="Max records to process per table")
+    parser.add_argument("--limit", type=str, default="", help="Max records to process (number, or 'all'/'0' for unlimited)")
     parser.add_argument("--max-runtime", type=float, default=5, help="Max runtime in hours")
     parser.add_argument("--task-id", type=int, default=7, help="scraping_progress task ID for breakpoint resume")
     args = parser.parse_args()
 
+    limit_val = None
+    if args.limit and args.limit not in ("all", "0", ""):
+        limit_val = int(args.limit)
+
     tables = ["real_estate", "real_estate_rent"] if args.table == "all" else [args.table]
     for t in tables:
-        backfill(t, limit=args.limit, max_runtime_hours=args.max_runtime, task_id=args.task_id)
+        backfill(t, limit=limit_val, max_runtime_hours=args.max_runtime, task_id=args.task_id)
         print()
 
 
