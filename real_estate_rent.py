@@ -605,6 +605,38 @@ def scrape_rent_property_detail(page, relative_url):
         except Exception as e:
             logger.warning(f"Error extracting images: {e}")
 
+        # 9. Property History + Last Sold Date
+        try:
+            hist_rows = page.query_selector_all('div[data-test="sale-history-row"]')
+            if hist_rows:
+                from datetime import datetime as _dt
+                events = []
+                last_sold = None
+                last_sold_dt = None
+                for row in hist_rows:
+                    lis = row.query_selector_all('li')
+                    if len(lis) < 3:
+                        continue
+                    date_text = lis[0].inner_text().strip()
+                    type_text = lis[2].inner_text().strip()
+                    value_text = lis[3].inner_text().strip() if len(lis) >= 4 else ""
+                    meta_text = lis[4].inner_text().strip() if len(lis) >= 5 else ""
+                    events.append({"date": date_text, "type": type_text, "value": value_text, "metadata": meta_text})
+                    if type_text.lower() == "sold":
+                        try:
+                            dt = _dt.strptime(date_text, "%d %b %Y")
+                            if last_sold_dt is None or dt > last_sold_dt:
+                                last_sold_dt = dt
+                                last_sold = dt.strftime("%Y-%m-%d")
+                        except (ValueError, IndexError):
+                            pass
+                if events:
+                    data['property_history'] = json.dumps(events, ensure_ascii=False)
+                    if last_sold:
+                        data['last_sold_date'] = last_sold
+        except Exception as e:
+            logger.warning(f"Error extracting property history: {e}")
+
         return data
 
     except Exception as e:

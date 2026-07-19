@@ -1,21 +1,20 @@
 """
-Backfill property_history and last_sold_date for real_estate and real_estate_rent tables.
+Unified backfill for real_estate and real_estate_rent.
 
-Extracts property history from the sale-history section on realestate.co.nz detail pages
-and updates property_history (JSON) and last_sold_date columns where currently NULL.
+Extracts from realestate.co.nz detail pages:
+  - car_spaces        → from features-icons (Garage + Other park)
+  - property_history  → from sale-history rows (JSON array)
+  - last_sold_date    → most recent "Sold" event date
+
+All three are extracted in a single page visit and updated together.
 
 Features:
-  - Processes records until max_runtime is reached (supports breakpoint resume)
-  - Automatically sets scraping_progress to 'complete' when no records remain
-  - Idempotent: already-backfilled records are skipped (WHERE property_history IS NULL)
-  - Compatible with gh_lock_manager workflow for concurrent-run safety
+  - Breakpoint resume via scraping_progress (gh_lock_manager compatible)
+  - Auto-complete when no records remain
+  - Idempotent: skips records already backfilled (property_history IS NULL OR car_spaces IS NULL)
 
 Usage:
     python scripts/backfill_realestate.py [--table real_estate] [--limit 100] [--max-runtime 5] [--task-id 7]
-
-Tables supported:
-    real_estate      — buy listings with property_url
-    real_estate_rent — rent listings with property_url
 """
 import sys, os, time, random, json, argparse, logging
 from datetime import datetime
@@ -33,8 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 def get_records_to_backfill(table, limit=None):
-    """Get records with NULL property_history and a valid property_url."""
-    sql = f"SELECT id, property_url, address, suburb, city FROM {table} WHERE property_history IS NULL AND property_url IS NOT NULL ORDER BY id"
+    """Get records missing car_spaces or property_history with a valid property_url."""
+    sql = f"SELECT id, property_url, address, suburb, city FROM {table} WHERE (car_spaces IS NULL OR property_history IS NULL) AND property_url IS NOT NULL ORDER BY id"
     params = []
     if limit:
         sql += " LIMIT %s"
@@ -45,76 +44,90 @@ def get_records_to_backfill(table, limit=None):
 def count_remaining(table):
     """Count how many records still need backfill."""
     rows = db.query(
-        f"SELECT COUNT(*) AS cnt FROM {table} WHERE property_history IS NULL AND property_url IS NOT NULL"
+        f"SELECT COUNT(*) AS cnt FROM {table} WHERE (car_spaces IS NULL OR property_history IS NULL) AND property_url IS NOT NULL"
     )
     return rows[0]['cnt'] if rows else 0
 
 
-def parse_property_history(page, url):
-    """Visit detail page and extract property history from sale-history rows.
+def extract_car_spaces(page):
+    """Extract car_spaces count from features-icons section."""
+    try:
+        page.wait_for_selector('div[data-test="features-icons"]', timeout=15000)
+    except Exception:
+        return None
 
-    Returns (events_list, last_sold_date_str_or_None).
-    Each event: {"date": str, "type": str, "value": str, "metadata": str}
+    result = page.evaluate("""
+        () => {
+            const container = document.querySelector('div[data-test="features-icons"]');
+            if (!container) return null;
+            const items = container.querySelectorAll(':scope > div');
+            let total = 0;
+            let found = false;
+            for (const item of items) {
+                const titleEl = item.querySelector('svg title');
+                const span = item.querySelector('span');
+                if (!titleEl || !span) continue;
+                const label = titleEl.textContent.trim();
+                if (label === 'Garage' || label === 'Other park') {
+                    const val = parseInt(span.textContent.trim(), 10);
+                    if (!isNaN(val)) { total += val; found = true; }
+                }
+            }
+            return found ? total : null;
+        }
+    """)
+    return result
+
+
+def extract_property_history(page):
+    """Parse property history from sale-history rows.
+
+    Returns (property_history_json, last_sold_date_str_or_None).
     """
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        time.sleep(random.uniform(1.5, 3))
+        page.wait_for_selector('div[data-test="sale-history-row"]', timeout=10000)
+    except Exception:
+        pass
 
-        try:
-            page.wait_for_selector('div[data-test="sale-history-row"]', timeout=10000)
-        except Exception:
-            pass
-
-        rows = page.query_selector_all('div[data-test="sale-history-row"]')
-        if not rows:
-            logger.info(f"  No sale-history rows found on page")
-            return [], None
-
-        events = []
-        last_sold = None
-        last_sold_dt = None
-
-        for row in rows:
-            lis = row.query_selector_all('li')
-            if len(lis) < 3:
-                continue
-
-            date_text = lis[0].inner_text().strip()
-            type_text = lis[2].inner_text().strip()
-            value_text = lis[3].inner_text().strip() if len(lis) >= 4 else ""
-            meta_text = lis[4].inner_text().strip() if len(lis) >= 5 else ""
-
-            event = {
-                "date": date_text,
-                "type": type_text,
-                "value": value_text,
-                "metadata": meta_text,
-            }
-            events.append(event)
-
-            if type_text.lower() == "sold":
-                try:
-                    dt = datetime.strptime(date_text, "%d %b %Y")
-                    if last_sold_dt is None or dt > last_sold_dt:
-                        last_sold_dt = dt
-                        last_sold = dt.strftime("%Y-%m-%d")
-                except (ValueError, IndexError):
-                    pass
-
-        property_history = json.dumps(events, ensure_ascii=False) if events else "[]"
-        return property_history, last_sold
-
-    except Exception as e:
-        logger.warning(f"Error parsing property history from {url}: {e}")
+    rows = page.query_selector_all('div[data-test="sale-history-row"]')
+    if not rows:
         return None, None
 
+    events = []
+    last_sold = None
+    last_sold_dt = None
 
-def update_record(table, record_id, property_history, last_sold_date):
-    """Update property_history and last_sold_date for a given record."""
+    for row in rows:
+        lis = row.query_selector_all('li')
+        if len(lis) < 3:
+            continue
+
+        date_text = lis[0].inner_text().strip()
+        type_text = lis[2].inner_text().strip()
+        value_text = lis[3].inner_text().strip() if len(lis) >= 4 else ""
+        meta_text = lis[4].inner_text().strip() if len(lis) >= 5 else ""
+
+        events.append({"date": date_text, "type": type_text, "value": value_text, "metadata": meta_text})
+
+        if type_text.lower() == "sold":
+            try:
+                dt = datetime.strptime(date_text, "%d %b %Y")
+                if last_sold_dt is None or dt > last_sold_dt:
+                    last_sold_dt = dt
+                    last_sold = dt.strftime("%Y-%m-%d")
+            except (ValueError, IndexError):
+                pass
+
+    property_history = json.dumps(events, ensure_ascii=False) if events else "[]"
+    return property_history, last_sold
+
+
+def update_record(table, record_id, car_spaces, property_history, last_sold_date):
+    """Update car_spaces, property_history and last_sold_date for a given record."""
     try:
         db.execute(
-            f"UPDATE {table} SET property_history = %s, last_sold_date = %s WHERE id = %s",
-            (property_history, last_sold_date, record_id),
+            f"UPDATE {table} SET car_spaces = COALESCE(%s, car_spaces), property_history = COALESCE(%s, property_history), last_sold_date = COALESCE(%s, last_sold_date) WHERE id = %s",
+            (car_spaces, property_history, last_sold_date, record_id),
         )
         return True
     except Exception as e:
@@ -136,10 +149,10 @@ def set_task_complete(task_id):
 
 def backfill(table, limit=None, max_runtime_hours=5, task_id=None):
     remaining = count_remaining(table)
-    logger.info(f"Backfilling {table}: {remaining} records need property_history")
+    logger.info(f"Backfilling {table}: {remaining} records need data")
 
     if remaining == 0:
-        print(f"[OK] {table}: No records need backfill (property_history already filled or no URLs)")
+        print(f"[OK] {table}: No records need backfill")
         if task_id:
             set_task_complete(task_id)
         return
@@ -150,8 +163,8 @@ def backfill(table, limit=None, max_runtime_hours=5, task_id=None):
 
     start_time = time.time()
     max_seconds = max_runtime_hours * 3600
-    updated = 0
-    skipped = 0
+    updated_car = 0
+    updated_hist = 0
     errors = 0
 
     with sync_playwright() as p:
@@ -177,20 +190,43 @@ def backfill(table, limit=None, max_runtime_hours=5, task_id=None):
             ci = rec.get("city") or ""
             logger.info(f"[{i+1}/{total}] {addr}, {sub}, {ci}")
 
-            property_history, last_sold_date = parse_property_history(page, url)
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                time.sleep(random.uniform(1.5, 3))
+            except Exception as e:
+                logger.warning(f"  Navigation failed: {e}")
+                errors += 1
+                if i < total - 1:
+                    time.sleep(random.uniform(1, 2))
+                continue
 
-            if property_history is not None:
-                if update_record(table, rid, property_history, last_sold_date):
-                    updated += 1
-                    if last_sold_date:
-                        print(f"  [OK] last_sold={last_sold_date} history={len(property_history)} chars")
-                    else:
-                        print(f"  [OK] history={len(property_history)} chars")
+            car_spaces = extract_car_spaces(page)
+            property_history, last_sold_date = extract_property_history(page)
+
+            parts = []
+            if car_spaces is not None:
+                parts.append(f"car={car_spaces}")
+            if property_history:
+                parts.append(f"history={len(property_history)} chars")
+                if last_sold_date:
+                    parts.append(f"sold={last_sold_date}")
+
+            if parts or (car_spaces is None and property_history is None):
+                if update_record(table, rid, car_spaces, property_history, last_sold_date):
+                    if car_spaces is not None:
+                        updated_car += 1
+                    if property_history:
+                        updated_hist += 1
+                    print(f"  [OK] {' | '.join(parts) if parts else 'no data found (marked done)'}")
                 else:
                     errors += 1
             else:
-                skipped += 1
-                print("  [SKIP] could not parse page")
+                # car_spaces is None AND no property_history found on page
+                if not property_history and car_spaces is None:
+                    errors += 1
+                    print("  [ERR] could not parse page")
+                else:
+                    errors += 1
 
             if i < total - 1:
                 time.sleep(random.uniform(1, 2))
@@ -200,11 +236,11 @@ def backfill(table, limit=None, max_runtime_hours=5, task_id=None):
     duration = (time.time() - start_time) / 60
     print(f"\n{'='*50}")
     print(f"Table: {table}")
-    print(f"  Fetched:   {total}")
-    print(f"  Updated:   {updated}")
-    print(f"  Skipped:   {skipped}")
-    print(f"  Errors:    {errors}")
-    print(f"  Duration:  {duration:.1f} min")
+    print(f"  Fetched:     {total}")
+    print(f"  Car spaces:  {updated_car}")
+    print(f"  History:     {updated_hist}")
+    print(f"  Errors:      {errors}")
+    print(f"  Duration:    {duration:.1f} min")
     print(f"{'='*50}")
 
     remaining_after = count_remaining(table)
@@ -213,7 +249,7 @@ def backfill(table, limit=None, max_runtime_hours=5, task_id=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill property_history from detail pages")
+    parser = argparse.ArgumentParser(description="Backfill car_spaces, property_history, last_sold_date from detail pages")
     parser.add_argument(
         "--table",
         choices=["real_estate", "real_estate_rent", "all"],
