@@ -23,6 +23,13 @@ REGION_BASE_PATHS = {
     "wellington": "/wellington",
 }
 
+# Partial-match predicate mirroring the discovery-side suburb filter:
+# sub in extracted OR extracted in sub (case-insensitive), over the suburb list.
+SUBURB_PARTIAL_MATCH_SQL = (
+    "EXISTS (SELECT 1 FROM unnest(%s) AS f(s) "
+    "WHERE LOWER(suburb) LIKE '%' || s || '%' OR s LIKE '%' || LOWER(suburb) || '%')"
+)
+
 class PropertyValueEngine(BaseScraper):
     def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5, ta_slug=None):
         super().__init__(mode, force_run, simulate, region)
@@ -179,7 +186,7 @@ class PropertyValueEngine(BaseScraper):
                 rows = db.query(
                     "SELECT COUNT(*) AS cnt FROM properties "
                     "WHERE (backfilled_at IS NULL OR property_history IS NULL OR has_rental_history IS NULL) "
-                    "AND region = %s AND LOWER(suburb) = ANY(%s)",
+                    f"AND region = %s AND {SUBURB_PARTIAL_MATCH_SQL}",
                     (self.region, self.suburbs_filter)
                 )
             else:
@@ -457,9 +464,9 @@ class PropertyValueEngine(BaseScraper):
                             WHERE (backfilled_at IS NULL
                                    OR property_history IS NULL
                                    OR has_rental_history IS NULL)
-                              AND region = %s AND LOWER(suburb) = ANY(%s)
+                              AND region = %s AND {} 
                             ORDER BY random() ASC LIMIT 50
-                        """
+                        """.format(SUBURB_PARTIAL_MATCH_SQL)
                         properties = db.query(sql, (self.region, self.suburbs_filter))
                     else:
                         sql = """

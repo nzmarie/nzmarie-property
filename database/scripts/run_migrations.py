@@ -39,7 +39,10 @@ def run():
         if hasattr(module, "run"):
             module.run()
             
-        db.execute("INSERT INTO schema_migrations (migration_id) VALUES (%s)", (f,))
+        db.execute(
+            "INSERT INTO schema_migrations (migration_id) VALUES (%s) ON CONFLICT (migration_id) DO NOTHING",
+            (f,)
+        )
         logger.info(f"Migration {f} applied successfully.")
 
 if __name__ == "__main__":
