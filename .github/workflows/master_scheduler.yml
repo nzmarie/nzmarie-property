@@ -116,8 +116,8 @@ jobs:
           if any_pv_reset:
               print('Waiting 30m before triggering property_scraper...')
               time.sleep(30 * 60)
-              trigger_workflow('property_scraper_auckland.yml', {'mode': 'discovery', 'force_run': str(force_run_env).lower()})
-              trigger_workflow('property_scraper_auckland_suburbs.yml', {'mode': 'discovery', 'force_run': str(force_run_env).lower()})
+              trigger_workflow('property_scraper_auckland.yml', {'mode': 'discovery', 'ta_slug': 'north-shore-city', 'force_run': str(force_run_env).lower()})
+              trigger_workflow('property_scraper_auckland_suburbs.yml', {'mode': 'discovery', 'ta_slug': 'north-shore-city', 'force_run': str(force_run_env).lower()})
           else:
               print('All PropertyValue tasks are running, skipping trigger')
           "

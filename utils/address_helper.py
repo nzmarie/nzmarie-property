@@ -191,5 +191,5 @@ def generate_address_fingerprint(address, suburb=None):
     else:
         raw = normalized
     raw = raw.lower()
-    fingerprint = re.sub(r'[^a-z0-9|]', '', raw)
+    fingerprint = re.sub(r'[^a-z0-9|/]', '', raw)
     return fingerprint or None

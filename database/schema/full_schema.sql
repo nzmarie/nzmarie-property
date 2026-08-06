@@ -145,7 +145,13 @@ CREATE TABLE IF NOT EXISTS scraping_progress (
     batch_size INTEGER,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     status VARCHAR(50) DEFAULT 'idle',
-    description TEXT
+    description TEXT,
+    ta_slug TEXT,
+    suburbs_target TEXT,
+    suburbs_completed TEXT,
+    total_suburbs INTEGER,
+    completed_suburbs INTEGER,
+    remaining_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS api_keepalive_status (

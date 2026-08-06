@@ -12,6 +12,11 @@ on:
           - discovery
           - backfill
           - refresh
+      ta_slug:
+        description: "Territorial Authority slug (propertyvalue.co.nz path segment). Default north-shore-city. e.g. north-shore-city, auckland"
+        required: true
+        default: "north-shore-city"
+        type: string
       suburbs:
         description: "Suburbs to scrape"
         required: true
@@ -94,6 +99,7 @@ jobs:
           echo "========================================="
           echo "🚀 Starting DISCOVERY mode"
           echo "========================================="
+          echo "TA: ${{ inputs.ta_slug }}"
           echo "Suburbs: $SUBURBS_VAL"
           echo "Max runtime: 5 hours"
           echo "========================================="
@@ -103,6 +109,7 @@ jobs:
             --region auckland \
             --task_id ${{ steps.task_id.outputs.task_id }} \
             --max_runtime 5 \
+            --ta "${{ inputs.ta_slug }}" \
             --suburbs "$SUBURBS_VAL" \
             ${{ inputs.force_run && '--force' || '' }}
 
@@ -137,6 +144,7 @@ jobs:
           echo "========================================="
           echo "🔄 Starting REFRESH mode"
           echo "========================================="
+          echo "TA: ${{ inputs.ta_slug }}"
           echo "Suburbs: $SUBURBS_VAL"
           echo "Max runtime: 5 hours"
           echo "========================================="
@@ -146,6 +154,7 @@ jobs:
             --region auckland \
             --task_id ${{ steps.task_id.outputs.task_id }} \
             --max_runtime 5 \
+            --ta "${{ inputs.ta_slug }}" \
             --suburbs "$SUBURBS_VAL" \
             ${{ inputs.force_run && '--force' || '' }}
 
@@ -159,29 +168,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          RESULT=$(python -c "
-          import sys, json; sys.path.append('.')
-          from utils.database import db
-          rows = db.query('SELECT status, last_processed_id FROM scraping_progress WHERE id = %s', (${{ steps.task_id.outputs.task_id }},))
-          if not rows:
-              print('NO_RECORD')
-          else:
-              status = rows[0]['status']
-              state = rows[0].get('last_processed_id')
-              if status == 'complete':
-                  print('COMPLETE')
-              elif state:
-                  try:
-                      s = json.loads(state)
-                      if s.get('ta_idx', 0) > 0 or s.get('sub_idx', 0) > 0 or s.get('page_num', 1) > 1:
-                          print('HAS_PROGRESS')
-                      else:
-                          print('NO_PROGRESS')
-                  except:
-                      print('NO_PROGRESS')
-              else:
-                  print('NO_PROGRESS')
-          ")
+          RESULT=$(python database/scripts/check_resume_state.py --task-id ${{ steps.task_id.outputs.task_id }})
 
           echo "Resume check result: $RESULT"
 
@@ -194,7 +181,7 @@ jobs:
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: token $GITHUB_TOKEN" \
               https://api.github.com/repos/${{ github.repository }}/actions/workflows/property_scraper_auckland_suburbs.yml/dispatches \
-              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"suburbs\":\"${{ inputs.suburbs }}\",\"force_run\":\"false\"}}"
+              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"force_run\":\"false\"}}"
             echo "✅ Next run triggered to continue from breakpoint"
           else
             echo "Task has no saved progress. No auto-trigger performed."

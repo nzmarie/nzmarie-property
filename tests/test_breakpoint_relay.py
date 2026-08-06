@@ -12,7 +12,9 @@ sys.path.append(os.getcwd())
 class MockDB:
     def __init__(self):
         self.data = {
-            10: {"status": "idle", "last_processed_id": None}
+            10: {"status": "idle", "last_processed_id": None,
+                  "suburbs_target": None, "suburbs_completed": None,
+                  "total_suburbs": 0, "completed_suburbs": 0, "remaining_count": None}
         }
     def query(self, sql, params=None):
         if "SELECT" in sql:
@@ -22,17 +24,27 @@ class MockDB:
         return []
     def execute(self, sql, params=None):
         sql_upper = sql.upper()
-        if "UPDATE" in sql_upper or "UPSERT" in sql_upper:
-            if "status = 'running'" in sql or ("UPSERT" in sql_upper and params and params[1] == "running"): 
-                self.data[10]["status"] = "running"
-            if "status = 'idle'" in sql or ("UPSERT" in sql_upper and params and params[1] == "idle"): 
-                self.data[10]["status"] = "idle"
-            if "status = 'complete'" in sql or ("UPSERT" in sql_upper and params and params[1] == "complete"): 
-                self.data[10]["status"] = "complete"
-            if "last_processed_id =" in sql:
-                self.data[10]["last_processed_id"] = params[1]
-            elif "UPSERT" in sql_upper and params and len(params) >= 3 and params[2] is not None:
-                self.data[10]["last_processed_id"] = params[2]
+        params = params or []
+        # Status: UPSERT params are (id, status, last_processed_id)
+        if "UPSERT" in sql_upper and len(params) >= 2:
+            self.data[10]["status"] = params[1]
+        if "status = 'running'" in sql: self.data[10]["status"] = "running"
+        if "status = 'idle'" in sql: self.data[10]["status"] = "idle"
+        if "status = 'complete'" in sql: self.data[10]["status"] = "complete"
+        # last_processed_id: from UPSERT 3rd param, or named update param
+        if "UPSERT" in sql_upper and "last_processed_id" in sql and len(params) >= 3:
+            self.data[10]["last_processed_id"] = params[2]
+        elif "last_processed_id =" in sql and params:
+            self.data[10]["last_processed_id"] = params[1] if len(params) > 1 else params[0]
+        # suburb-progress columns
+        if "suburbs_target" in sql and params:
+            self.data[10]["suburbs_target"] = params[0]
+        if "suburbs_completed" in sql and params:
+            self.data[10]["suburbs_completed"] = params[0]
+        if "total_suburbs" in sql and len(params) >= 3:
+            self.data[10]["total_suburbs"] = params[2]
+        if "remaining_count" in sql and params:
+            self.data[10]["remaining_count"] = params[0]
 
 # Global mock instance
 the_mock_db = MockDB()

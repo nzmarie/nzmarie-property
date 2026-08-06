@@ -24,7 +24,7 @@ REGION_BASE_PATHS = {
 }
 
 class PropertyValueEngine(BaseScraper):
-    def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5):
+    def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5, ta_slug=None):
         super().__init__(mode, force_run, simulate, region)
         self.base_url = "https://www.propertyvalue.co.nz"
         self.region_path = REGION_BASE_PATHS.get(region, f"/{region}")
@@ -37,6 +37,10 @@ class PropertyValueEngine(BaseScraper):
         ] if suburbs_filter else None
         if self.suburbs_filter:
             logger.info(f"Suburb filter active: {self.suburbs_filter}")
+        # Territorial Authority slug filter, e.g. "north-shore-city" -> /auckland/north-shore-city/{id}
+        self.ta_slug = ta_slug.strip().lower() if ta_slug else None
+        if self.ta_slug:
+            logger.info(f"TA filter active: {self.ta_slug}")
 
     async def run(self):
         if self.task_id:
@@ -100,6 +104,101 @@ class PropertyValueEngine(BaseScraper):
                 return None
         return None
 
+    async def _load_suburb_progress(self):
+        """Load suburb-level progress from scraping_progress columns."""
+        if not self.task_id:
+            return None, [], 0, 0, -1
+        rows = db.query(
+            "SELECT suburbs_target, suburbs_completed, total_suburbs, completed_suburbs, remaining_count "
+            "FROM scraping_progress WHERE id = %s",
+            (self.task_id,)
+        )
+        if not rows:
+            return None, [], 0, 0, -1
+        r = rows[0]
+        target = None
+        if r.get('suburbs_target'):
+            try:
+                target = json.loads(r['suburbs_target'])
+            except Exception:
+                target = None
+        done = []
+        if r.get('suburbs_completed'):
+            try:
+                done = json.loads(r['suburbs_completed'])
+            except Exception:
+                done = []
+        total = int(r.get('total_suburbs') or 0)
+        completed = int(r.get('completed_suburbs') or 0)
+        remaining = r.get('remaining_count')
+        return target, done, total, completed, remaining
+
+    async def _init_suburb_progress(self, target_list):
+        """Persist the target suburb list; reset completed list if the target changed or forcing a fresh run."""
+        target = [s.strip().lower() for s in target_list if s.strip()]
+        if not target:
+            return
+        stored_target, done, _, _, _ = await self._load_suburb_progress()
+        if done is None:
+            done = []
+        if self.force_run or stored_target != target:
+            done = []
+        db.execute(
+            "UPDATE scraping_progress SET suburbs_target = %s, suburbs_completed = %s, "
+            "total_suburbs = %s, completed_suburbs = %s, updated_at = NOW() WHERE id = %s",
+            (json.dumps(target), json.dumps(done), len(target), len(done), self.task_id)
+        )
+
+    async def _mark_suburb_done(self, suburb_name):
+        """Append a completed suburb to the persistent progress record."""
+        _, done, _, _, _ = await self._load_suburb_progress()
+        if done is None:
+            done = []
+        norm = suburb_name.strip().lower()
+        if norm not in done:
+            done.append(norm)
+        db.execute(
+            "UPDATE scraping_progress SET suburbs_completed = %s, completed_suburbs = %s, "
+            "updated_at = NOW() WHERE id = %s",
+            (json.dumps(done), len(done), self.task_id)
+        )
+
+    def _save_remaining(self, remaining):
+        """Persist the number of properties still needing backfill."""
+        if not self.task_id:
+            return
+        db.execute(
+            "UPDATE scraping_progress SET remaining_count = %s, updated_at = NOW() WHERE id = %s",
+            (remaining, self.task_id)
+        )
+
+    def _count_unbackfilled(self):
+        """Count properties in scope (region/suburb filter) that still need details."""
+        try:
+            if self.suburbs_filter:
+                rows = db.query(
+                    "SELECT COUNT(*) AS cnt FROM properties "
+                    "WHERE (backfilled_at IS NULL OR property_history IS NULL OR has_rental_history IS NULL) "
+                    "AND region = %s AND LOWER(suburb) = ANY(%s)",
+                    (self.region, self.suburbs_filter)
+                )
+            else:
+                rows = db.query(
+                    "SELECT COUNT(*) AS cnt FROM properties "
+                    "WHERE (backfilled_at IS NULL OR property_history IS NULL OR has_rental_history IS NULL) "
+                    "AND region = %s",
+                    (self.region,)
+                )
+            return rows[0]['cnt'] if rows else 0
+        except Exception as e:
+            logger.warning(f"Failed to count unbackfilled properties: {e}")
+            return -1
+
+    @staticmethod
+    def _ta_slug(ta_link):
+        parts = ta_link.strip('/').split('/')
+        return parts[-2].lower() if len(parts) >= 2 else ""
+
     def should_stop(self):
         elapsed = time.monotonic() - self.start_time
         return elapsed > self.max_runtime
@@ -152,6 +251,18 @@ class PropertyValueEngine(BaseScraper):
         last_sub_idx = state.get('sub_idx', 0)
         last_page = state.get('page_num', 1)
 
+        # Suburb-level progress tracking: persist target suburbs, load completed ones
+        if self.suburbs_filter and self.task_id:
+            await self._init_suburb_progress(self.suburbs_filter)
+        _, done_suburbs, total_suburbs, _, _ = await self._load_suburb_progress()
+        if done_suburbs is None:
+            done_suburbs = []
+
+        # When restricting to a single TA, the TA index no longer matches the
+        # unfiltered TA list from older runs — reset it so resume starts at index 0.
+        if self.ta_slug:
+            last_ta_idx = 0
+
         target_url = f"{self.base_url}{self.region_path}"
         page = await self.context.new_page()
 
@@ -160,6 +271,12 @@ class PropertyValueEngine(BaseScraper):
 
             content = await page.content()
             ta_links = PropertyValueParser.parse_ta_links(content, self.region)
+            # Restrict to the configured TA slug (e.g. north-shore-city)
+            if self.ta_slug:
+                ta_links = [l for l in ta_links if self._ta_slug(l) == self.ta_slug]
+                if not ta_links:
+                    logger.error(f"No TA matched slug '{self.ta_slug}'. Found: {[self._ta_slug(l) for l in ta_links]}")
+                logger.info(f"After TA filter ({self.ta_slug}): {len(ta_links)} Territorial Authorities")
             logger.info(f"Found {len(ta_links)} Territorial Authorities. Resuming from TA index {last_ta_idx}")
 
             for i, ta_link in enumerate(ta_links):
@@ -188,6 +305,11 @@ class PropertyValueEngine(BaseScraper):
                         continue
 
                 for j, sub_link in enumerate(suburb_links):
+                    # Skip suburbs already fully scraped (persisted progress)
+                    extracted_name = self._extract_suburb_name(sub_link).lower()
+                    if extracted_name and extracted_name in done_suburbs:
+                        logger.info(f"  Skipping already-completed suburb: {extracted_name}")
+                        continue
                     if i == last_ta_idx and j < last_sub_idx: continue
                     
                     if self.should_stop():
@@ -200,7 +322,11 @@ class PropertyValueEngine(BaseScraper):
                     # Page resumption only for the first suburb we hit
                     resume_page = last_page if (i == last_ta_idx and j == last_sub_idx) else 1
                     
-                    await self._scrape_suburb_properties(page, self.base_url + sub_link, suburb_name, ta_name, i, j, resume_page)
+                    completed = await self._scrape_suburb_properties(page, self.base_url + sub_link, suburb_name, ta_name, i, j, resume_page)
+
+                    # Persist suburb completion so resume skips it next cycle
+                    if completed and self.task_id and extracted_name:
+                        await self._mark_suburb_done(extracted_name)
 
                     if self.should_stop(): return
 
@@ -210,7 +336,15 @@ class PropertyValueEngine(BaseScraper):
                         await self.set_status_by_id(self.task_id, "running", new_state)
 
             if self.task_id:
-                await self.set_status_by_id(self.task_id, "complete", json.dumps({"ta_idx": 0, "sub_idx": 0, "page_num": 1}))
+                # With a suburb filter, only complete once all target suburbs are done
+                if self.suburbs_filter:
+                    _, done_suburbs, total_suburbs, _, _ = await self._load_suburb_progress()
+                    if total_suburbs > 0 and len(done_suburbs) >= total_suburbs:
+                        await self.set_status_by_id(self.task_id, "complete", json.dumps({"ta_idx": 0, "sub_idx": 0, "page_num": 1}))
+                    else:
+                        logger.info(f"Discovery cycle ended; {len(done_suburbs)}/{total_suburbs} suburbs complete. Waiting for next run.")
+                else:
+                    await self.set_status_by_id(self.task_id, "complete", json.dumps({"ta_idx": 0, "sub_idx": 0, "page_num": 1}))
 
         except Exception as e:
             logger.error(f"Discovery failed: {e}")
@@ -218,6 +352,7 @@ class PropertyValueEngine(BaseScraper):
             await page.close()
 
     async def _scrape_suburb_properties(self, page, suburb_url, suburb_name, ta_name, ta_idx, sub_idx, start_page=1):
+        """Scrape all pages of a suburb. Returns True when the suburb is fully scraped, False if stopped early."""
         logger.info(f"Scraping suburb: {suburb_name} from page {start_page}")
         current_url = f"{suburb_url}?page={start_page}" if start_page > 1 else suburb_url
         page_num = start_page
@@ -296,11 +431,22 @@ class PropertyValueEngine(BaseScraper):
             new_state = json.dumps({"ta_idx": ta_idx, "sub_idx": sub_idx + 1, "page_num": 1})
             await self.set_status_by_id(self.task_id, "running", new_state)
 
+        return not stopped_early
+
     async def run_backfill(self):
         logger.info(f"Starting Backfill Mode for region: {self.region}")
-        
+
         processed_count = 0
-        
+
+        if self.task_id and not self.simulate:
+            remaining_at_start = self._count_unbackfilled()
+            self._save_remaining(remaining_at_start)
+            logger.info(f"Remaining properties to backfill at start: {remaining_at_start}")
+            if remaining_at_start == 0:
+                logger.info("No properties need backfilling. Marking task complete.")
+                await self.set_status_by_id(self.task_id, "complete")
+                return
+
         while not self.should_stop():
             properties = []
             if not self.simulate:
@@ -331,6 +477,7 @@ class PropertyValueEngine(BaseScraper):
             if not properties:
                 logger.info("No properties found for backfill.")
                 if self.task_id:
+                    self._save_remaining(0)
                     await self.set_status_by_id(self.task_id, "complete")
                 break
 
@@ -487,6 +634,13 @@ class PropertyValueEngine(BaseScraper):
         if self.should_stop():
             elapsed_h = (time.monotonic() - self.start_time) / 3600
             logger.info(f"⏱️ Time limit reached ({elapsed_h:.1f}h). Processed {processed_count} properties. Exiting for breakpoint resume.")
+            if self.task_id and not self.simulate:
+                remaining = self._count_unbackfilled()
+                self._save_remaining(remaining)
+                if remaining == 0:
+                    await self.set_status_by_id(self.task_id, "complete")
+                else:
+                    logger.info(f"Backfill resume checkpoint saved: {remaining} properties remaining.")
 
     @staticmethod
     def _to_sql_date(date_str):
@@ -557,7 +711,9 @@ if __name__ == "__main__":
     parser.add_argument("--suburbs", type=str, default=None,
                         help="Comma-separated suburb names to filter (e.g. 'Northcross,Torbay,Beach Haven')")
     parser.add_argument("--max_runtime", type=float, default=5.5, help="Max runtime in hours")
+    parser.add_argument("--ta", type=str, default=None,
+                        help="Territorial Authority slug to restrict discovery to (e.g. north-shore-city, auckland)")
     args = parser.parse_args()
 
-    engine = PropertyValueEngine(args.mode, args.force, args.simulate, args.region, args.task_id, args.suburbs, args.max_runtime)
+    engine = PropertyValueEngine(args.mode, args.force, args.simulate, args.region, args.task_id, args.suburbs, args.max_runtime, args.ta)
     asyncio.run(engine.run())

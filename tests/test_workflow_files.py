@@ -20,6 +20,10 @@ class TestWorkflowFiles(unittest.TestCase):
 
         run_step = next(s for s in steps if s.get("run") and "property_value_engine.py" in s.get("run", ""))
         self.assertIn("--region", run_step["run"])
+        self.assertIn("--ta", run_step["run"])
+
+        resume_step = next(s for s in steps if s.get("name", "").startswith("Trigger next run"))
+        self.assertIn("check_resume_state.py", resume_step["run"])
 
     def test_property_scraper_auckland_suburbs(self):
         path = os.path.join(self.workflows_dir, "property_scraper_auckland_suburbs.yml")
@@ -35,6 +39,10 @@ class TestWorkflowFiles(unittest.TestCase):
 
         run_step = next(s for s in steps if s.get("run") and "property_value_engine.py" in s.get("run", ""))
         self.assertIn("--suburbs", run_step["run"])
+        self.assertIn("--ta", run_step["run"])
+
+        resume_step = next(s for s in steps if s.get("name", "").startswith("Trigger next run"))
+        self.assertIn("check_resume_state.py", resume_step["run"])
 
     def test_real_estate_scraper_auckland(self):
         path = os.path.join(self.workflows_dir, "real_estate_scraper_auckland.yml")
