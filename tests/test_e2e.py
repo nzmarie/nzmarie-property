@@ -237,7 +237,7 @@ class TestPropertyValueEngineBackfill(unittest.TestCase):
         mock_db.query.return_value = []
         with patch('scrapers.property_value_engine.db', mock_db):
             asyncio.run(engine.run_backfill())
-        target_calls = [c for c in mock_db.query.call_args_list if "LOWER(suburb) = ANY(%s)" in c[0][0]]
+        target_calls = [c for c in mock_db.query.call_args_list if "unnest(%s)" in c[0][0]]
         self.assertEqual(len(target_calls), 1)
         self.assertEqual(target_calls[0][0][1], ("auckland", ["albany", "torbay"]))
 

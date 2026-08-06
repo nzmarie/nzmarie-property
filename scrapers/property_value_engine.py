@@ -229,24 +229,35 @@ class PropertyValueEngine(BaseScraper):
                 p['property_url'], fingerprint
             ))
 
-        sql = """
+        if not batch_params:
+            return
+
+        sql_template = """
             INSERT INTO properties (id, address, suburb, city, region, property_url, address_fingerprint, created_at)
-            VALUES (md5(random()::text || clock_timestamp()::text), %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            VALUES {placeholders}
             ON CONFLICT (address_fingerprint) DO UPDATE
             SET address = EXCLUDED.address, suburb = EXCLUDED.suburb, city = EXCLUDED.city,
                 region = EXCLUDED.region, property_url = EXCLUDED.property_url
             RETURNING address, suburb, (created_at >= CURRENT_TIMESTAMP - INTERVAL '1 second') as is_new
         """
-        
-        try:
-            for params in batch_params:
-                result = db.query(sql, params)
-                if result:
-                    status = "[NEW]" if result[0]['is_new'] else "[UPD]"
-                    sub = result[0].get('suburb')
-                    logger.info(f"  {status} {result[0]['address']}{', ' + sub if sub else ''}")
-        except Exception as e:
-            logger.error(f"Failed to process properties batch: {e}")
+
+        new_count = 0
+        upd_count = 0
+        row_placeholder = "(md5(random()::text || clock_timestamp()::text), %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)"
+        for i in range(0, len(batch_params), 500):
+            chunk = batch_params[i:i + 500]
+            placeholders = ", ".join([row_placeholder] * len(chunk))
+            flat = [v for row in chunk for v in row]
+            try:
+                results = db.query(sql_template.format(placeholders=placeholders), flat)
+                for row in results or []:
+                    if row['is_new']:
+                        new_count += 1
+                    else:
+                        upd_count += 1
+            except Exception as e:
+                logger.error(f"Failed to upsert properties batch ({len(chunk)} rows): {e}")
+        logger.info(f"Upserted properties: {new_count} new, {upd_count} updated ({len(batch_params)} total rows)")
 
     async def run_discovery(self):
         logger.info(f"Starting Discovery Mode for region: {self.region}")
@@ -445,6 +456,48 @@ class PropertyValueEngine(BaseScraper):
 
         processed_count = 0
 
+        # Buffered writers: accumulate rows in memory and flush with execute_batch
+        # (single transaction per flush) instead of one transaction per row.
+        FLUSH = 100
+        heartbeat_every = 25
+        update_buffer = []        # main UPDATE (with last_sold_date)
+        update_node_buffer = []   # no-date UPDATE variant
+        history_buffer = []       # property_history INSERTs
+        backfilled_buffer = []    # mark backfilled_at
+
+        history_insert_sql = """
+            INSERT INTO property_history
+            (property_id, event_date, event_description, interval_since_last_event)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (property_id, event_date, event_description) DO NOTHING
+        """
+
+        def flush_updates():
+            if update_buffer:
+                db.execute_batch(update_sql_main, update_buffer)
+                update_buffer.clear()
+            if update_node_buffer:
+                db.execute_batch(update_sql_no_date, update_node_buffer)
+                update_node_buffer.clear()
+
+        def flush_history():
+            if history_buffer:
+                db.execute_batch(history_insert_sql, history_buffer)
+                history_buffer.clear()
+
+        def flush_backfilled():
+            if backfilled_buffer:
+                db.execute_batch("UPDATE properties SET backfilled_at = NOW() WHERE id = %s", backfilled_buffer)
+                backfilled_buffer.clear()
+
+        def flush_all():
+            flush_updates()
+            flush_history()
+            flush_backfilled()
+
+        update_sql_main = None
+        update_sql_no_date = None
+
         if self.task_id and not self.simulate:
             remaining_at_start = self._count_unbackfilled()
             self._save_remaining(remaining_at_start)
@@ -496,8 +549,8 @@ class PropertyValueEngine(BaseScraper):
                 db_suburb = prop.get('suburb')
                 logger.info(f"Backfilling details for: {prop['address']}{', ' + db_suburb if db_suburb else ''}")
                 
-                # Update heartbeat occasionally (every property)
-                if self.task_id:
+                # Update heartbeat occasionally (every heartbeat_every properties)
+                if self.task_id and processed_count % heartbeat_every == 0:
                     await self.set_status_by_id(self.task_id, "running")
                 
                 page = await self.context.new_page()
@@ -522,7 +575,7 @@ class PropertyValueEngine(BaseScraper):
                     last_sold_date_sql = self._to_sql_date(data.get('last_sold_date'))
 
                     # Try to update with last_sold_date first
-                    update_sql = """
+                    update_sql_main = """
                         UPDATE properties
                         SET bedrooms = %s, bathrooms = %s, car_spaces = %s,
                             floor_size = %s, land_area_numeric = %s,
@@ -544,7 +597,7 @@ class PropertyValueEngine(BaseScraper):
                     """
                     
                     try:
-                        db.execute(update_sql, (
+                        update_buffer.append((
                             data['bedrooms'], data['bathrooms'], data.get('car_spaces'),
                             str(data['floor_area']) if data['floor_area'] else None,
                             data['land_area'],
@@ -588,7 +641,7 @@ class PropertyValueEngine(BaseScraper):
                                     has_rental_history = %s
                                 WHERE id = %s
                             """
-                            db.execute(update_sql_no_date, (
+                            update_node_buffer.append((
                                 data['bedrooms'], data['bathrooms'], data.get('car_spaces'),
                                 str(data['floor_area']) if data['floor_area'] else None,
                                 data['land_area'],
@@ -612,31 +665,30 @@ class PropertyValueEngine(BaseScraper):
                             raise
 
                     if data.get('history'):
-                        history_sql = """
-                            INSERT INTO property_history
-                            (property_id, event_date, event_description, interval_since_last_event)
-                            VALUES (%s, %s, %s, %s)
-                            ON CONFLICT (property_id, event_date, event_description) DO NOTHING
-                        """
-                        history_params = []
                         for ev in data['history']:
                             event_date_sql = self._to_sql_date(ev['event_date'])
                             if event_date_sql:
-                                history_params.append([prop['id'], event_date_sql, ev['event_description'], ev['event_interval']])
-                        if history_params:
-                            db.execute_batch(history_sql, history_params)
+                                history_buffer.append([prop['id'], event_date_sql, ev['event_description'], ev['event_interval']])
 
-                    db.execute("UPDATE properties SET backfilled_at = NOW() WHERE id = %s", (prop['id'],))
+                    backfilled_buffer.append((prop['id'],))
 
                     parsed_suburb = data.get('suburb') or db_suburb
                     processed_count += 1
                     logger.info(f"  Successfully updated {prop['address']}{', ' + parsed_suburb if parsed_suburb else ''} (#{processed_count})")
+
+                    # Flush buffered writes periodically to bound memory usage
+                    if len(update_buffer) + len(update_node_buffer) + len(history_buffer) + len(backfilled_buffer) >= FLUSH:
+                        flush_updates()
+                        flush_history()
+                        flush_backfilled()
                     
                 except Exception as e:
                     logger.error(f"Failed to backfill {prop['address']}: {e}")
-                    db.execute("UPDATE properties SET backfilled_at = NOW() WHERE id = %s", (prop['id'],))
+                    backfilled_buffer.append((prop['id'],))
                 finally:
                     await page.close()
+
+        flush_all()  # persist any remaining buffered writes
 
         if self.should_stop():
             elapsed_h = (time.monotonic() - self.start_time) / 3600
