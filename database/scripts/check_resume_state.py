@@ -29,11 +29,14 @@ def check(task_id):
 
     r = rows[0]
     status = r.get('status')
+    remaining = r.get('remaining_count')
 
     if status == 'complete':
-        return "COMPLETE"
+        # Discovery finished all suburbs; only truly complete if backfill drained everything.
+        if remaining is None or remaining == 0:
+            return "COMPLETE"
+        return "HAS_PROGRESS"
 
-    remaining = r.get('remaining_count')
     if remaining is not None and remaining > 0:
         return "HAS_PROGRESS"
 

@@ -25,9 +25,10 @@ REGION_BASE_PATHS = {
 
 # Partial-match predicate mirroring the discovery-side suburb filter:
 # sub in extracted OR extracted in sub (case-insensitive), over the suburb list.
+# NOTE: bare % must be doubled (%% ) because psycopg2 treats % as a format marker.
 SUBURB_PARTIAL_MATCH_SQL = (
     "EXISTS (SELECT 1 FROM unnest(%s) AS f(s) "
-    "WHERE LOWER(suburb) LIKE '%' || s || '%' OR s LIKE '%' || LOWER(suburb) || '%')"
+    "WHERE LOWER(suburb) LIKE '%%' || s || '%%' OR s LIKE '%%' || LOWER(suburb) || '%%')"
 )
 
 class PropertyValueEngine(BaseScraper):
@@ -169,6 +170,27 @@ class PropertyValueEngine(BaseScraper):
             "updated_at = NOW() WHERE id = %s",
             (json.dumps(done), len(done), self.task_id)
         )
+
+    @staticmethod
+    def _all_targets_done(target_list, done):
+        """True when every target suburb has at least one completed (partially-matched) suburb."""
+        if not target_list:
+            return False
+        for t in target_list:
+            if not any(t in d or d in t for d in done):
+                return False
+        return True
+
+    async def _discovery_complete(self):
+        """Whether discovery has finished all target suburbs (so backfill may mark the task complete)."""
+        if self.suburbs_filter:
+            _, done, _, _, _ = await self._load_suburb_progress()
+            return self._all_targets_done(self.suburbs_filter, done)
+        if not self.task_id:
+            return True
+        # No suburb filter: discovery marks the task complete only after sweeping the whole region.
+        rows = db.query("SELECT status FROM scraping_progress WHERE id = %s", (self.task_id,))
+        return bool(rows and rows[0].get('status') == 'complete')
 
     def _save_remaining(self, remaining):
         """Persist the number of properties still needing backfill."""
@@ -354,13 +376,13 @@ class PropertyValueEngine(BaseScraper):
                         await self.set_status_by_id(self.task_id, "running", new_state)
 
             if self.task_id:
-                # With a suburb filter, only complete once all target suburbs are done
+                # With a suburb filter, only complete once every target suburb is done
                 if self.suburbs_filter:
                     _, done_suburbs, total_suburbs, _, _ = await self._load_suburb_progress()
-                    if total_suburbs > 0 and len(done_suburbs) >= total_suburbs:
+                    if self._all_targets_done(self.suburbs_filter, done_suburbs):
                         await self.set_status_by_id(self.task_id, "complete", json.dumps({"ta_idx": 0, "sub_idx": 0, "page_num": 1}))
                     else:
-                        logger.info(f"Discovery cycle ended; {len(done_suburbs)}/{total_suburbs} suburbs complete. Waiting for next run.")
+                        logger.info(f"Discovery cycle ended; {len(done_suburbs)}/{total_suburbs} target suburbs complete. Waiting for next run.")
                 else:
                     await self.set_status_by_id(self.task_id, "complete", json.dumps({"ta_idx": 0, "sub_idx": 0, "page_num": 1}))
 
@@ -375,6 +397,7 @@ class PropertyValueEngine(BaseScraper):
         current_url = f"{suburb_url}?page={start_page}" if start_page > 1 else suburb_url
         page_num = start_page
         stopped_early = False
+        seen_urls = set()  # URLs already upserted in this suburb, to detect circular/repeated pages
 
         while current_url:
             if self.should_stop(): 
@@ -391,8 +414,18 @@ class PropertyValueEngine(BaseScraper):
             property_links = PropertyValueParser.parse_property_links(content, self.region)
             logger.info(f"  Page {page_num}: Found {len(property_links)} real property links")
 
+            # Only upsert links not already seen in this suburb. If a page only
+            # repeats previously-seen links (propertyvalue serves circular pages
+            # beyond the real last page), we have reached the end of the list.
+            new_links = [l for l in property_links if l not in seen_urls]
+            if not new_links:
+                logger.info(f"  Page {page_num}: no new properties (end of suburb listing reached). Stopping pagination.")
+                current_url = None
+                continue
+            seen_urls.update(new_links)
+
             properties_to_save = []
-            for prop_path in property_links:
+            for prop_path in new_links:
                 # Extract clean address from URL slug (remove postcode and property ID)
                 addr_slug = prop_path.strip('/').split('/')[-1].split('?')[0]
                 
@@ -503,8 +536,11 @@ class PropertyValueEngine(BaseScraper):
             self._save_remaining(remaining_at_start)
             logger.info(f"Remaining properties to backfill at start: {remaining_at_start}")
             if remaining_at_start == 0:
-                logger.info("No properties need backfilling. Marking task complete.")
-                await self.set_status_by_id(self.task_id, "complete")
+                if await self._discovery_complete():
+                    logger.info("No properties need backfilling and discovery is complete. Marking task complete.")
+                    await self.set_status_by_id(self.task_id, "complete")
+                else:
+                    logger.info("No properties need backfilling yet, but discovery has not finished all suburbs. Staying resumable.")
                 return
 
         while not self.should_stop():
@@ -538,7 +574,10 @@ class PropertyValueEngine(BaseScraper):
                 logger.info("No properties found for backfill.")
                 if self.task_id:
                     self._save_remaining(0)
-                    await self.set_status_by_id(self.task_id, "complete")
+                    if await self._discovery_complete():
+                        await self.set_status_by_id(self.task_id, "complete")
+                    else:
+                        logger.info("Discovery has not finished all suburbs. Staying resumable.")
                 break
 
             logger.info(f"Processing batch of {len(properties)} properties...")
@@ -696,7 +735,7 @@ class PropertyValueEngine(BaseScraper):
             if self.task_id and not self.simulate:
                 remaining = self._count_unbackfilled()
                 self._save_remaining(remaining)
-                if remaining == 0:
+                if remaining == 0 and await self._discovery_complete():
                     await self.set_status_by_id(self.task_id, "complete")
                 else:
                     logger.info(f"Backfill resume checkpoint saved: {remaining} properties remaining.")

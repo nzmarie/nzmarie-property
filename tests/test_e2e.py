@@ -241,6 +241,112 @@ class TestPropertyValueEngineBackfill(unittest.TestCase):
         self.assertEqual(len(target_calls), 1)
         self.assertEqual(target_calls[0][0][1], ("auckland", ["albany", "torbay"]))
 
+    def test_backfill_zero_remaining_not_complete_when_discovery_incomplete(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="backfill", region="auckland", task_id=10, suburbs_filter="Albany")
+        engine.simulate = False
+        mock_db = MagicMock()
+        mock_db.query.return_value = []  # count -> 0 remaining; progress -> no rows (total 0)
+        with patch('scrapers.property_value_engine.db', mock_db), \
+             patch.object(engine, 'set_status_by_id', new=AsyncMock()) as m_status:
+            asyncio.run(engine.run_backfill())
+        for call in m_status.call_args_list:
+            self.assertNotEqual(call.args[1], "complete")
+
+    def test_backfill_zero_remaining_complete_when_discovery_done(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="backfill", region="auckland", task_id=10, suburbs_filter="Albany")
+        engine.simulate = False
+        mock_db = MagicMock()
+
+        def q(sql, params=None):
+            if "suburbs_target" in sql:
+                return [{"suburbs_target": '["albany"]', "suburbs_completed": '["albany"]',
+                         "total_suburbs": 1, "completed_suburbs": 1, "remaining_count": 0}]
+            return []
+        mock_db.query.side_effect = q
+        with patch('scrapers.property_value_engine.db', mock_db), \
+             patch.object(engine, 'set_status_by_id', new=AsyncMock()) as m_status:
+            asyncio.run(engine.run_backfill())
+        self.assertEqual(m_status.call_args_list[-1].args[1], "complete")
+
+
+class TestSuburbGuarantee(unittest.TestCase):
+    """Multi-suburb input like 'Takapuna, Totara Vale' must cover every target before completing."""
+
+    def test_multi_suburb_parsing_with_spaces(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="discovery", region="auckland", suburbs_filter="Takapuna, Totara Vale")
+        self.assertEqual(engine.suburbs_filter, ["takapuna", "totara vale"])
+
+    def test_all_targets_done_positive(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        self.assertTrue(PropertyValueEngine._all_targets_done(
+            ["takapuna", "totara vale"],
+            ["takapuna north shore", "totara vale north shore"]))
+
+    def test_all_targets_done_missing_one(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        self.assertFalse(PropertyValueEngine._all_targets_done(
+            ["takapuna", "totara vale"],
+            ["takapuna north shore"]))
+
+    def test_all_targets_done_partial_overmatch(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        # 'takapuna' target covered even though the site suburb includes extra words
+        self.assertTrue(PropertyValueEngine._all_targets_done(
+            ["takapuna", "totara vale"],
+            ["takapuna central", "totara vale north shore"]))
+
+
+class TestSuburbPagination(unittest.TestCase):
+    """Discovery must stop pagination when a page repeats already-seen property links."""
+
+    def test_pagination_stops_on_circular_page(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10, simulate=True)
+        engine.safe_goto = AsyncMock(return_value=True)
+        engine.set_status_by_id = AsyncMock()
+        page = MagicMock()
+        page.content = AsyncMock(side_effect=["html1", "html2"])
+        page.close = AsyncMock()
+
+        links1 = ["/auckland/nsc/sub/addr1-0626-111", "/auckland/nsc/sub/addr2-0626-222",
+                  "/auckland/nsc/sub/addr3-0626-333"]
+        with patch('scrapers.property_value_engine.PropertyValueParser.parse_property_links',
+                   side_effect=[links1, links1]) as m_parse, \
+             patch('scrapers.property_value_engine.PropertyValueParser.parse_next_page',
+                   side_effect=["/page2"]) as m_next, \
+             patch.object(engine, '_save_properties_batch', new=AsyncMock()) as m_save:
+            result = asyncio.run(engine._scrape_suburb_properties(
+                page, "http://x/sub", "Suburb", "TA", 0, 0))
+
+        self.assertTrue(result)          # completed normally, not stopped early
+        self.assertEqual(m_save.call_count, 1)   # only the first page upserted
+        self.assertEqual(m_next.call_count, 1)   # never asked for page 3
+
+    def test_pagination_stops_on_empty_page(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10, simulate=True)
+        engine.safe_goto = AsyncMock(return_value=True)
+        engine.set_status_by_id = AsyncMock()
+        page = MagicMock()
+        page.content = AsyncMock(side_effect=["html1", "html2"])
+        page.close = AsyncMock()
+
+        links1 = ["/auckland/nsc/sub/addr1-0626-111", "/auckland/nsc/sub/addr2-0626-222"]
+        with patch('scrapers.property_value_engine.PropertyValueParser.parse_property_links',
+                   side_effect=[links1, []]) as m_parse, \
+             patch('scrapers.property_value_engine.PropertyValueParser.parse_next_page',
+                   side_effect=["/page2"]) as m_next, \
+             patch.object(engine, '_save_properties_batch', new=AsyncMock()) as m_save:
+            result = asyncio.run(engine._scrape_suburb_properties(
+                page, "http://x/sub", "Suburb", "TA", 0, 0))
+
+        self.assertTrue(result)
+        self.assertEqual(m_save.call_count, 1)
+        self.assertEqual(m_next.call_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

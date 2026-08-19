@@ -24,6 +24,11 @@ class TestResumeState(unittest.TestCase):
                                       "total_suburbs": 10, "completed_suburbs": 10,
                                       "last_processed_id": None}), "COMPLETE")
 
+    def test_complete_but_backfill_pending(self):
+        self.assertEqual(self._check({"status": "complete", "remaining_count": 5,
+                                      "total_suburbs": 10, "completed_suburbs": 10,
+                                      "last_processed_id": None}), "HAS_PROGRESS")
+
     def test_remaining_count_positive(self):
         self.assertEqual(self._check({"status": "running", "remaining_count": 42,
                                       "total_suburbs": 0, "completed_suburbs": 0,
