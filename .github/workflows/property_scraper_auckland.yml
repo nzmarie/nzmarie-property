@@ -27,6 +27,11 @@ on:
         type: boolean
         required: false
         default: false
+      address:
+        description: "Target a single property address in backfill mode (e.g. '850A Beach Road, Waiake'). Leave empty to use suburbs."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -116,6 +121,7 @@ jobs:
           && (inputs.mode == 'backfill' || inputs.mode == 'discovery')
         run: |
           SUBURBS="${{ inputs.suburbs }}"
+          ADDRESS="${{ inputs.address }}"
 
           echo ""
           echo "========================================="
@@ -123,10 +129,12 @@ jobs:
           echo "========================================="
           echo "Region: auckland"
           echo "Suburbs: ${SUBURBS:-all}"
+          echo "Address: ${ADDRESS:-none}"
           echo "Max runtime: 5 hours"
           echo "========================================="
 
           BACKFILL_ARGS=(--mode backfill --region auckland --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5 --force)
+          if [ -n "$ADDRESS" ]; then BACKFILL_ARGS+=(--address "$ADDRESS"); fi
           if [ -n "$SUBURBS" ]; then BACKFILL_ARGS+=(--suburbs "$SUBURBS"); fi
 
           python scrapers/property_value_engine.py "${BACKFILL_ARGS[@]}"
@@ -173,7 +181,7 @@ jobs:
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: token $GITHUB_TOKEN" \
               https://api.github.com/repos/${{ github.repository }}/actions/workflows/property_scraper_auckland.yml/dispatches \
-              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug || 'north-shore-city' }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"force_run\":\"false\"}}"
+              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug || 'north-shore-city' }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"address\":\"${{ inputs.address }}\",\"force_run\":\"false\"}}"
             echo "✅ Next run triggered to continue from breakpoint"
           else
             echo "Task has no saved progress. No auto-trigger performed."

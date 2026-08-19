@@ -32,7 +32,7 @@ SUBURB_PARTIAL_MATCH_SQL = (
 )
 
 class PropertyValueEngine(BaseScraper):
-    def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5, ta_slug=None):
+    def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5, ta_slug=None, address_filter=None):
         super().__init__(mode, force_run, simulate, region)
         self.base_url = "https://www.propertyvalue.co.nz"
         self.region_path = REGION_BASE_PATHS.get(region, f"/{region}")
@@ -49,6 +49,11 @@ class PropertyValueEngine(BaseScraper):
         self.ta_slug = ta_slug.strip().lower() if ta_slug else None
         if self.ta_slug:
             logger.info(f"TA filter active: {self.ta_slug}")
+        # Single-address targeted refresh, e.g. "850A Beach Road, Waiake". Address part
+        # (before the first comma) is used for a partial match against properties.address.
+        self.address_filter = address_filter.strip() if address_filter else None
+        if self.address_filter:
+            logger.info(f"Address filter active: {self.address_filter}")
 
     async def run(self):
         if self.task_id:
@@ -183,6 +188,9 @@ class PropertyValueEngine(BaseScraper):
 
     async def _discovery_complete(self):
         """Whether discovery has finished all target suburbs (so backfill may mark the task complete)."""
+        if self.address_filter:
+            # A targeted single-address backfill has no suburb-gating; it's done when the address is processed.
+            return True
         if self.suburbs_filter:
             _, done, _, _, _ = await self._load_suburb_progress()
             return self._all_targets_done(self.suburbs_filter, done)
@@ -201,10 +209,21 @@ class PropertyValueEngine(BaseScraper):
             (remaining, self.task_id)
         )
 
+    def _address_match_clause(self):
+        """SQL predicate + params to locate a single targeted address (address part before first comma)."""
+        addr = self.address_filter.split(',')[0].strip().lower()
+        return "LOWER(address) LIKE '%%' || %s || '%%'", (addr,)
+
     def _count_unbackfilled(self):
         """Count properties in scope (region/suburb filter) that still need details."""
         try:
-            if self.suburbs_filter:
+            if self.address_filter:
+                clause, params = self._address_match_clause()
+                rows = db.query(
+                    "SELECT COUNT(*) AS cnt FROM properties WHERE region = %s AND " + clause,
+                    (self.region,) + params
+                )
+            elif self.suburbs_filter:
                 rows = db.query(
                     "SELECT COUNT(*) AS cnt FROM properties "
                     "WHERE (backfilled_at IS NULL OR property_history IS NULL OR has_rental_history IS NULL) "
@@ -288,6 +307,11 @@ class PropertyValueEngine(BaseScraper):
             try:
                 results = db.query(sql_template.format(placeholders=placeholders), flat)
                 for row in results or []:
+                    label = "NEW" if row['is_new'] else "UPD"
+                    addr = row['address']
+                    if row.get('suburb'):
+                        addr += f", {row['suburb']}"
+                    logger.info(f"  [{label}] {addr}")
                     if row['is_new']:
                         new_count += 1
                     else:
@@ -299,7 +323,13 @@ class PropertyValueEngine(BaseScraper):
                     try:
                         res = db.query(single_row_sql, params)
                         if res:
-                            if res[0]['is_new']:
+                            row = res[0]
+                            label = "NEW" if row['is_new'] else "UPD"
+                            addr = row['address']
+                            if row.get('suburb'):
+                                addr += f", {row['suburb']}"
+                            logger.info(f"  [{label}] {addr}")
+                            if row['is_new']:
                                 new_count += 1
                             else:
                                 upd_count += 1
@@ -573,7 +603,15 @@ class PropertyValueEngine(BaseScraper):
             properties = []
             if not self.simulate:
                 try:
-                    if self.suburbs_filter:
+                    if self.address_filter:
+                        clause, params = self._address_match_clause()
+                        sql = """
+                            SELECT id, address, suburb, property_url FROM properties
+                            WHERE region = %s AND {}
+                            ORDER BY id LIMIT 1
+                        """.format(clause)
+                        properties = db.query(sql, (self.region,) + params)
+                    elif self.suburbs_filter:
                         sql = """
                             SELECT id, address, suburb, property_url FROM properties
                             WHERE (backfilled_at IS NULL
@@ -837,7 +875,9 @@ if __name__ == "__main__":
     parser.add_argument("--max_runtime", type=float, default=5.5, help="Max runtime in hours")
     parser.add_argument("--ta", type=str, default=None,
                         help="Territorial Authority slug to restrict discovery to (e.g. north-shore-city, auckland)")
+    parser.add_argument("--address", type=str, default=None,
+                        help="Target a single property address (e.g. '850A Beach Road, Waiake') in backfill mode")
     args = parser.parse_args()
 
-    engine = PropertyValueEngine(args.mode, args.force, args.simulate, args.region, args.task_id, args.suburbs, args.max_runtime, args.ta)
+    engine = PropertyValueEngine(args.mode, args.force, args.simulate, args.region, args.task_id, args.suburbs, args.max_runtime, args.ta, args.address)
     asyncio.run(engine.run())

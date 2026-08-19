@@ -228,6 +228,66 @@ class TestRealEstateAucklandMaxRuntime(unittest.TestCase):
             "Hardcoded 1.2h runtime was a bug and must not exist")
 
 
+class TestPropertyValueEngineAddressFilter(unittest.TestCase):
+    """--address targets one specific property (e.g. '850A Beach Road, Waiake')."""
+
+    def test_parses_address_part_before_comma(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="backfill", region="auckland", task_id=10, address_filter="850A Beach Road, Waiake")
+        clause, params = engine._address_match_clause()
+        self.assertIn("LOWER(address) LIKE", clause)
+        self.assertEqual(params, ("850a beach road",))
+
+    def test_count_unbackfilled_uses_address_clause(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="backfill", region="auckland", task_id=10, address_filter="850A Beach Road, Waiake")
+        mock_db = MagicMock()
+        mock_db.query.return_value = [{"cnt": 1}]
+        with patch('scrapers.property_value_engine.db', mock_db):
+            cnt = engine._count_unbackfilled()
+        self.assertEqual(cnt, 1)
+        sql, params = mock_db.query.call_args[0]
+        self.assertIn("LOWER(address) LIKE", sql)
+        self.assertEqual(params, ("auckland", "850a beach road"))
+
+    def test_run_backfill_selects_by_address_without_backfill_predicate(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="backfill", region="auckland", task_id=10, address_filter="850A Beach Road, Waiake")
+        engine.simulate = False
+        mock_db = MagicMock()
+
+        def q(sql, params=None):
+            if "SELECT COUNT(*) AS cnt" in sql:
+                return [{"cnt": 1}]
+            if "SELECT id, address, suburb, property_url" in sql:
+                return []
+            if "suburbs_target" in sql:
+                return [{"suburbs_target": '[]', "suburbs_completed": '[]',
+                         "total_suburbs": 0, "completed_suburbs": 0, "remaining_count": 1}]
+            return []
+        mock_db.query.side_effect = q
+        with patch('scrapers.property_value_engine.db', mock_db), \
+             patch.object(engine, 'set_status_by_id', new=AsyncMock()):
+            asyncio.run(engine.run_backfill())
+        select_calls = [c for c in mock_db.query.call_args_list
+                        if "SELECT id, address, suburb, property_url" in c[0][0]]
+        self.assertEqual(len(select_calls), 1)
+        sql, params = select_calls[0].args
+        self.assertNotIn("backfilled_at IS NULL", sql)
+        self.assertIn("LIMIT 1", sql)
+        self.assertIn("850a beach road", params)
+
+    def test_parse_cli_includes_address_arg(self):
+        import ast
+        engine_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scrapers", "property_value_engine.py"
+        )
+        with open(engine_path, encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn("parser.add_argument(\"--address\"", src)
+
+
 class TestPropertyValueEngineBackfill(unittest.TestCase):
     def test_run_backfill_uses_suburbs_filter_in_query(self):
         from scrapers.property_value_engine import PropertyValueEngine

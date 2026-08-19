@@ -27,6 +27,11 @@ on:
         type: boolean
         required: false
         default: false
+      address:
+        description: "Target a single property address in backfill mode (e.g. '850A Beach Road, Waiake'). Leave empty to use suburbs."
+        required: false
+        default: ""
+        type: string
 
   # schedule:
   #   - cron: "0 0 * * *"  # Disabled — manual trigger only
@@ -119,12 +124,14 @@ jobs:
           && (inputs.mode == 'backfill' || inputs.mode == 'discovery')
         run: |
           SUBURBS_VAL="${{ inputs.suburbs || 'Northcross,Oteha,Torbay,Fairview Heights,Waiake,Browns Bay,Pinehill,Rothesay Bay,Murrays Bay,Albany' }}"
+          ADDRESS="${{ inputs.address }}"
           
           echo ""
           echo "========================================="
           echo "🔄 Starting BACKFILL mode"
           echo "========================================="
           echo "Suburbs: $SUBURBS_VAL"
+          echo "Address: ${ADDRESS:-none}"
           echo "Max runtime: 5 hours"
           echo "========================================="
           
@@ -134,7 +141,8 @@ jobs:
             --task_id ${{ steps.task_id.outputs.task_id }} \
             --suburbs "$SUBURBS_VAL" \
             --max_runtime 5 \
-            --force
+            --force \
+            $([ -n "$ADDRESS" ] && echo "--address \"$ADDRESS\"")
 
       - name: Run Refresh Mode
         if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'refresh'
@@ -181,7 +189,7 @@ jobs:
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: token $GITHUB_TOKEN" \
               https://api.github.com/repos/${{ github.repository }}/actions/workflows/property_scraper_auckland_suburbs.yml/dispatches \
-              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"force_run\":\"false\"}}"
+              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"address\":\"${{ inputs.address }}\",\"force_run\":\"false\"}}"
             echo "✅ Next run triggered to continue from breakpoint"
           else
             echo "Task has no saved progress. No auto-trigger performed."
