@@ -271,6 +271,30 @@ class TestPropertyValueEngineBackfill(unittest.TestCase):
         self.assertEqual(m_status.call_args_list[-1].args[1], "complete")
 
 
+class TestPropertiesUpsertDedup(unittest.TestCase):
+    """Multi-row upsert must collapse colliding fingerprints within a batch (CockroachDB rejects row twice)."""
+
+    def test_batch_dedups_colliding_fingerprints(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="discovery", region="auckland", simulate=False)
+        mock_db = MagicMock()
+        # RETURNING a single-row result so counts/logging don't blow up
+        mock_db.query.return_value = [{"address": "1 Test Road", "suburb": "Birkdale", "is_new": True}]
+        props = [
+            {"address": "1 Test Road", "suburb": "Birkdale", "city": "Auckland",
+             "property_url": "http://u/1"},
+            {"address": "1 Test Road", "suburb": "Birkdale", "city": "Auckland",
+             "property_url": "http://u/1b"},  # same fingerprint -> must be collapsed
+        ]
+        with patch('scrapers.property_value_engine.db', mock_db), \
+             patch.object(engine, 'set_status_by_id', new=AsyncMock()):
+            asyncio.run(engine._save_properties_batch(props))
+
+        self.assertEqual(mock_db.query.call_count, 1)
+        sql, params = mock_db.query.call_args[0]
+        self.assertEqual(len(params), 6, "multi-row statement must contain exactly one row after dedup")
+
+
 class TestSuburbGuarantee(unittest.TestCase):
     """Multi-suburb input like 'Takapuna, Totara Vale' must cover every target before completing."""
 

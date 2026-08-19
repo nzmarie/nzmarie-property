@@ -254,6 +254,20 @@ class PropertyValueEngine(BaseScraper):
         if not batch_params:
             return
 
+        # Deduplicate by fingerprint WITHIN the batch. CockroachDB rejects a single
+        # multi-row INSERT...ON CONFLICT that touches the same row twice ("cannot
+        # affect row a second time"), so two colliding fingerprints on one page must
+        # be collapsed into a single row (last write wins, same as per-row upserts).
+        seen_fp = set()
+        deduped = []
+        for row in batch_params:
+            fp = row[5]
+            if fp in seen_fp:
+                continue
+            seen_fp.add(fp)
+            deduped.append(row)
+        batch_params = deduped
+
         sql_template = """
             INSERT INTO properties (id, address, suburb, city, region, property_url, address_fingerprint, created_at)
             VALUES {placeholders}
@@ -266,6 +280,7 @@ class PropertyValueEngine(BaseScraper):
         new_count = 0
         upd_count = 0
         row_placeholder = "(md5(random()::text || clock_timestamp()::text), %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)"
+        single_row_sql = sql_template.format(placeholders=row_placeholder)
         for i in range(0, len(batch_params), 500):
             chunk = batch_params[i:i + 500]
             placeholders = ", ".join([row_placeholder] * len(chunk))
@@ -278,7 +293,18 @@ class PropertyValueEngine(BaseScraper):
                     else:
                         upd_count += 1
             except Exception as e:
-                logger.error(f"Failed to upsert properties batch ({len(chunk)} rows): {e}")
+                # Fall back to row-by-row so a single bad row can't lose the whole chunk.
+                logger.error(f"Failed to upsert properties batch ({len(chunk)} rows): {e}. Retrying row-by-row.")
+                for params in chunk:
+                    try:
+                        res = db.query(single_row_sql, params)
+                        if res:
+                            if res[0]['is_new']:
+                                new_count += 1
+                            else:
+                                upd_count += 1
+                    except Exception as e2:
+                        logger.error(f"  Failed to upsert property (fingerprint={params[5]}): {e2}")
         logger.info(f"Upserted properties: {new_count} new, {upd_count} updated ({len(batch_params)} total rows)")
 
     async def run_discovery(self):
