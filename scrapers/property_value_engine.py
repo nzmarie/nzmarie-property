@@ -31,6 +31,12 @@ SUBURB_PARTIAL_MATCH_SQL = (
     "WHERE LOWER(suburb) LIKE '%%' || s || '%%' OR s LIKE '%%' || LOWER(suburb) || '%%')"
 )
 
+# A property is "unbackfilled" only when its backfill marker is missing.
+# property_history/has_rental_history can legitimately stay NULL for listings with no
+# sales/rental history, so they must NOT gate eligibility — gating on them caused an
+# infinite loop re-fetching the same history-less properties forever.
+UNBACKFILLED_PREDICATE = "backfilled_at IS NULL"
+
 class PropertyValueEngine(BaseScraper):
     def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5, ta_slug=None, address_filter=None):
         super().__init__(mode, force_run, simulate, region)
@@ -226,14 +232,14 @@ class PropertyValueEngine(BaseScraper):
             elif self.suburbs_filter:
                 rows = db.query(
                     "SELECT COUNT(*) AS cnt FROM properties "
-                    "WHERE (backfilled_at IS NULL OR property_history IS NULL OR has_rental_history IS NULL) "
+                    f"WHERE {UNBACKFILLED_PREDICATE} "
                     f"AND region = %s AND {SUBURB_PARTIAL_MATCH_SQL}",
                     (self.region, self.suburbs_filter)
                 )
             else:
                 rows = db.query(
                     "SELECT COUNT(*) AS cnt FROM properties "
-                    "WHERE (backfilled_at IS NULL OR property_history IS NULL OR has_rental_history IS NULL) "
+                    f"WHERE {UNBACKFILLED_PREDICATE} "
                     "AND region = %s",
                     (self.region,)
                 )
@@ -612,21 +618,17 @@ class PropertyValueEngine(BaseScraper):
                         """.format(clause)
                         properties = db.query(sql, (self.region,) + params)
                     elif self.suburbs_filter:
-                        sql = """
+                        sql = f"""
                             SELECT id, address, suburb, property_url FROM properties
-                            WHERE (backfilled_at IS NULL
-                                   OR property_history IS NULL
-                                   OR has_rental_history IS NULL)
-                              AND region = %s AND {} 
+                            WHERE {UNBACKFILLED_PREDICATE}
+                              AND region = %s AND {SUBURB_PARTIAL_MATCH_SQL}
                             ORDER BY random() ASC LIMIT 50
-                        """.format(SUBURB_PARTIAL_MATCH_SQL)
+                        """
                         properties = db.query(sql, (self.region, self.suburbs_filter))
                     else:
-                        sql = """
+                        sql = f"""
                             SELECT id, address, suburb, property_url FROM properties
-                            WHERE (backfilled_at IS NULL
-                                   OR property_history IS NULL
-                                   OR has_rental_history IS NULL)
+                            WHERE {UNBACKFILLED_PREDICATE}
                               AND region = %s
                             ORDER BY random() ASC LIMIT 50
                         """

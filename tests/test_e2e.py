@@ -228,6 +228,50 @@ class TestRealEstateAucklandMaxRuntime(unittest.TestCase):
             "Hardcoded 1.2h runtime was a bug and must not exist")
 
 
+class TestUnbackfilledPredicate(unittest.TestCase):
+    """Eligibility must be backfilled_at-only: history-less properties (NULL property_history)
+    used to be re-selected forever, causing an infinite re-scrape loop."""
+
+    def test_count_query_is_backfilled_at_only(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="backfill", region="auckland", task_id=10, suburbs_filter="Torbay")
+        mock_db = MagicMock()
+        mock_db.query.return_value = [{"cnt": 0}]
+        with patch('scrapers.property_value_engine.db', mock_db):
+            engine._count_unbackfilled()
+        sql = mock_db.query.call_args[0][0]
+        self.assertIn("backfilled_at IS NULL", sql)
+        self.assertNotIn("property_history IS NULL", sql)
+        self.assertNotIn("has_rental_history IS NULL", sql)
+
+    def test_backfill_select_query_is_backfilled_at_only(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="backfill", region="auckland", task_id=10, suburbs_filter="Torbay")
+        engine.simulate = False
+        mock_db = MagicMock()
+
+        def q(sql, params=None):
+            if "SELECT COUNT(*) AS cnt" in sql:
+                return [{"cnt": 1}]
+            if "SELECT id, address, suburb, property_url" in sql:
+                return []
+            if "suburbs_target" in sql:
+                return [{"suburbs_target": '["torbay"]', "suburbs_completed": '[]',
+                         "total_suburbs": 1, "completed_suburbs": 0, "remaining_count": 1}]
+            return []
+        mock_db.query.side_effect = q
+        with patch('scrapers.property_value_engine.db', mock_db), \
+             patch.object(engine, 'set_status_by_id', new=AsyncMock()):
+            asyncio.run(engine.run_backfill())
+        select_sqls = [c.args[0] for c in mock_db.query.call_args_list
+                       if "SELECT id, address, suburb, property_url" in c.args[0]]
+        self.assertTrue(select_sqls, "backfill SELECT should be issued")
+        for sql in select_sqls:
+            self.assertIn("backfilled_at IS NULL", sql)
+            self.assertNotIn("property_history IS NULL", sql)
+            self.assertNotIn("has_rental_history IS NULL", sql)
+
+
 class TestPropertyValueEngineAddressFilter(unittest.TestCase):
     """--address targets one specific property (e.g. '850A Beach Road, Waiake')."""
 
