@@ -140,15 +140,11 @@ jobs:
           echo "Max runtime: 5 hours"
           echo "========================================="
           
-          python scrapers/property_value_engine.py \
-            --mode backfill \
-            --region auckland \
-            --task_id ${{ steps.task_id.outputs.task_id }} \
-            --suburbs "$SUBURBS_VAL" \
-            --max_runtime 5 \
-            --force \
-            $([ -n "$ADDRESS" ] && echo "--address \"$ADDRESS\"")
-            ${{ inputs.refill && '--refill' || '' }}
+          BACKFILL_ARGS=(--mode backfill --region auckland --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5 --force --suburbs "$SUBURBS_VAL")
+          if [ -n "$ADDRESS" ]; then BACKFILL_ARGS+=(--address "$ADDRESS"); fi
+          if [ "${{ inputs.refill }}" = "true" ]; then BACKFILL_ARGS+=(--refill); fi
+
+          python scrapers/property_value_engine.py "${BACKFILL_ARGS[@]}"
 
       - name: Run Refresh Mode
         if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'refresh'

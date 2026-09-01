@@ -47,7 +47,7 @@ class PropertyValueEngine(BaseScraper):
         self.start_time = time.monotonic()
         self.max_runtime = max_runtime * 3600
         self.suburbs_filter = [
-            s.strip().lower() for s in suburbs_filter.split(',') if s.strip()
+            s.strip().lower() for s in suburbs_filter.replace('，', ',').split(',') if s.strip()
         ] if suburbs_filter else None
         if self.suburbs_filter:
             logger.info(f"Suburb filter active: {self.suburbs_filter}")
