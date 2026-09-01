@@ -60,6 +60,12 @@ class PropertyValueEngine(BaseScraper):
         self.address_filter = address_filter.strip() if address_filter else None
         if self.address_filter:
             logger.info(f"Address filter active: {self.address_filter}")
+        # Global set of property_url values seen in THIS run — prevents the same
+        # URL from being queued twice even when it appears under different suburbs.
+        self._seen_urls = set()
+        # Cached set of property_url values already present in the DB (lazy-loaded
+        # on first call to _save_properties_batch).  Used to skip cross-run duplicates.
+        self._existing_urls = None
 
     async def run(self):
         if self.task_id:
@@ -220,6 +226,27 @@ class PropertyValueEngine(BaseScraper):
         addr = self.address_filter.split(',')[0].strip().lower()
         return "LOWER(address) LIKE '%%' || %s || '%%'", (addr,)
 
+    def _ensure_existing_urls(self):
+        """Lazy-load the set of property_url values already present in the DB.
+        Returns a set (possibly empty) used to skip URLs that are already ingested."""
+        if self._existing_urls is None:
+            rows = db.query("SELECT property_url FROM properties WHERE property_url IS NOT NULL")
+            self._existing_urls = {r["property_url"] for r in rows}
+        return self._existing_urls
+
+    def _filter_new_links(self, links):
+        """Return only links not yet seen in THIS run (global in-memory _seen_urls).
+        DB-level dedup is performed later in _save_properties_batch, so a URL that
+        was already ingested in a previous run is skipped there instead of here.
+        This keeps _scrape_suburb_properties free of DB queries and safe for use
+        inside existing tests that do not mock the database."""
+        out = []
+        for l in links:
+            if l in self._seen_urls:
+                continue
+            out.append(l)
+        return out
+
     def _count_unbackfilled(self):
         """Count properties in scope (region/suburb filter) that still need details."""
         try:
@@ -266,6 +293,10 @@ class PropertyValueEngine(BaseScraper):
 
         batch_params = []
         for p in properties_data:
+            # Skip URLs already ingested in a previous run (cross-run dedup).
+            if p['property_url'] in self._ensure_existing_urls():
+                logger.info(f"  [SKIP] URL already in DB: {p['property_url']}")
+                continue
             # Mandatory fingerprint per spec: address|suburb -> lowercase -> [a-z0-9|] only
             fingerprint = generate_address_fingerprint(p['address'], p.get('suburb'))
             if not fingerprint:
@@ -476,15 +507,17 @@ class PropertyValueEngine(BaseScraper):
             property_links = PropertyValueParser.parse_property_links(content, self.region)
             logger.info(f"  Page {page_num}: Found {len(property_links)} real property links")
 
-            # Only upsert links not already seen in this suburb. If a page only
-            # repeats previously-seen links (propertyvalue serves circular pages
-            # beyond the real last page), we have reached the end of the list.
-            new_links = [l for l in property_links if l not in seen_urls]
+            # Dedup: (1) per-suburb seen_urls (circular-page detection),
+            # (2) global _seen_urls (same URL across suburbs), (3) DB existing_urls
+            # (cross-run duplicate).  Links already in the DB never enter the batch,
+            # so they cannot consume RU on a redundant upsert.
+            new_links = self._filter_new_links(property_links)
             if not new_links:
                 logger.info(f"  Page {page_num}: no new properties (end of suburb listing reached). Stopping pagination.")
                 current_url = None
                 continue
             seen_urls.update(new_links)
+            self._seen_urls.update(new_links)
 
             properties_to_save = []
             for prop_path in new_links:

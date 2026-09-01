@@ -382,8 +382,8 @@ class TestPropertiesUpsertDedup(unittest.TestCase):
         from scrapers.property_value_engine import PropertyValueEngine
         engine = PropertyValueEngine(mode="discovery", region="auckland", simulate=False)
         mock_db = MagicMock()
-        # RETURNING a single-row result so counts/logging don't blow up
-        mock_db.query.return_value = [{"address": "1 Test Road", "suburb": "Birkdale", "is_new": True}]
+        # First call: _ensure_existing_urls SELECT; subsequent calls: INSERT
+        mock_db.query.side_effect = lambda sql, params=None: [{"property_url": "http://u/1"}] if "SELECT property_url" in sql else [{"address": "1 Test Road", "suburb": "Birkdale", "is_new": True}]
         props = [
             {"address": "1 Test Road", "suburb": "Birkdale", "city": "Auckland",
              "property_url": "http://u/1"},
@@ -394,7 +394,8 @@ class TestPropertiesUpsertDedup(unittest.TestCase):
              patch.object(engine, 'set_status_by_id', new=AsyncMock()):
             asyncio.run(engine._save_properties_batch(props))
 
-        self.assertEqual(mock_db.query.call_count, 1)
+        # SELECT existing_urls + 1 INSERT (addr1 skipped) = 2 calls
+        self.assertEqual(mock_db.query.call_count, 2)
         sql, params = mock_db.query.call_args[0]
         self.assertEqual(len(params), 6, "multi-row statement must contain exactly one row after dedup")
 
@@ -474,6 +475,81 @@ class TestSuburbPagination(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(m_save.call_count, 1)
         self.assertEqual(m_next.call_count, 1)
+
+
+class TestUrlDedup(unittest.TestCase):
+    """_filter_new_links and _save_properties_batch skip already-ingested URLs."""
+
+    def test_filter_new_links_skips_global_seen_urls(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10)
+        engine._seen_urls = {"http://x/addr1"}
+        result = engine._filter_new_links(["http://x/addr1", "http://x/addr2"])
+        self.assertEqual(result, ["http://x/addr2"])
+        self.assertIn("http://x/addr1", engine._seen_urls)
+
+    def test_filter_new_links_skips_db_existing_urls(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        from unittest.mock import MagicMock
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10)
+        # _filter_new_links only checks the in-memory _seen_urls (no DB query)
+        engine._seen_urls = {"http://x/addr1"}
+        result = engine._filter_new_links(["http://x/addr1", "http://x/addr2"])
+        self.assertEqual(result, ["http://x/addr2"])
+        self.assertIn("http://x/addr1", engine._seen_urls)
+
+    def test_save_properties_batch_skips_db_existing_urls(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        from unittest.mock import MagicMock
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10)
+        mock_db = MagicMock()
+        # Pre-populate existing_urls to skip addr1
+        engine._existing_urls = {"http://x/addr1"}
+        with patch('scrapers.property_value_engine.db', mock_db):
+            asyncio.run(engine._save_properties_batch([
+                {"address": "1 Old Rd", "suburb": "Sub", "city": "City",
+                 "property_url": "http://x/addr1"},
+                {"address": "2 New Rd", "suburb": "Sub", "city": "City",
+                 "property_url": "http://x/addr2"},
+            ]))
+        # db.query called once for the INSERT (addr1 skipped before batch)
+        self.assertEqual(mock_db.query.call_count, 1)
+        insert_call = [c for c in mock_db.query.call_args_list
+                       if "INSERT INTO properties" in str(c[0][0])]
+        self.assertEqual(len(insert_call), 1)
+        # c[0] = (sql, flat) positional args tuple; c[0][1] = flat list
+        flat = insert_call[0][0][1]
+        # Each row = 6 params: address, suburb, city, region, property_url, fingerprint
+        urls_in_insert = [flat[i] for i in range(4, len(flat), 6)]
+        self.assertNotIn("http://x/addr1", urls_in_insert)
+        self.assertIn("http://x/addr2", urls_in_insert)
+
+    def test_scrape_suburb_avoids_cross_suburb_duplicate_url(self):
+        from scrapers.property_value_engine import PropertyValueEngine
+        from unittest.mock import MagicMock
+        engine = PropertyValueEngine(mode="discovery", region="auckland", task_id=10, simulate=True)
+        engine._seen_urls = {"/auckland/north-shore-city/northcross-0630/1-old-rd-123"}
+        engine.safe_goto = AsyncMock(return_value=True)
+        engine.parse_next_page = MagicMock(return_value=None)
+        page = MagicMock()
+        page.content = AsyncMock(return_value="<html></html>")
+        page.close = AsyncMock()
+        links1 = ["/auckland/north-shore-city/northcross-0630/1-old-rd-123",
+                  "/auckland/north-shore-city/northcross-0630/2-new-rd-456"]
+        mock_db = MagicMock()
+        mock_db.query.return_value = []
+        with patch('scrapers.property_value_engine.db', mock_db), \
+             patch('scrapers.property_value_engine.PropertyValueParser.parse_property_links',
+                   return_value=links1), \
+             patch.object(engine, '_save_properties_batch', new=AsyncMock()) as m_save:
+            asyncio.run(engine._scrape_suburb_properties(
+                page, "http://x/sub", "Suburb", "TA", 0, 0))
+        m_save.assert_called_once()
+        called = m_save.call_args[0][0]
+        urls = [c['property_url'] for c in called]
+        self.assertNotIn("https://www.propertyvalue.co.nz/auckland/north-shore-city/northcross-0630/1-old-rd-123", urls)
+        self.assertEqual(len(urls), 1)
+        self.assertIn("2-new-rd-456", urls[0])
 
 
 if __name__ == "__main__":
