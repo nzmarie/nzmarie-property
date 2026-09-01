@@ -38,7 +38,7 @@ SUBURB_PARTIAL_MATCH_SQL = (
 UNBACKFILLED_PREDICATE = "backfilled_at IS NULL"
 
 class PropertyValueEngine(BaseScraper):
-    def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5, ta_slug=None, address_filter=None):
+    def __init__(self, mode="discovery", force_run=False, simulate=False, region="auckland", task_id=None, suburbs_filter=None, max_runtime=5.5, ta_slug=None, address_filter=None, refill=False):
         super().__init__(mode, force_run, simulate, region)
         self.base_url = "https://www.propertyvalue.co.nz"
         self.region_path = REGION_BASE_PATHS.get(region, f"/{region}")
@@ -66,6 +66,9 @@ class PropertyValueEngine(BaseScraper):
         # Cached set of property_url values already present in the DB (lazy-loaded
         # on first call to _save_properties_batch).  Used to skip cross-run duplicates.
         self._existing_urls = None
+        # When True, backfill mode first runs discovery (--force) to find missing addresses,
+        # then proceeds with backfill. Turns a two-step process into one.
+        self.refill = refill
 
     async def run(self):
         if self.task_id:
@@ -582,6 +585,12 @@ class PropertyValueEngine(BaseScraper):
     async def run_backfill(self):
         logger.info(f"Starting Backfill Mode for region: {self.region}")
 
+        if self.refill:
+            logger.info("Refill mode: running discovery first to find missing addresses...")
+            self.force_run = True
+            await self.run_discovery()
+            logger.info("Discovery complete. Proceeding with backfill...")
+
         processed_count = 0
 
         # Buffered writers: accumulate rows in memory and flush with execute_batch
@@ -912,7 +921,9 @@ if __name__ == "__main__":
                         help="Territorial Authority slug to restrict discovery to (e.g. north-shore-city, auckland)")
     parser.add_argument("--address", type=str, default=None,
                         help="Target a single property address (e.g. '850A Beach Road, Waiake') in backfill mode")
+    parser.add_argument("--refill", action="store_true",
+                        help="Run discovery first in backfill mode to find and fill missing addresses")
     args = parser.parse_args()
 
-    engine = PropertyValueEngine(args.mode, args.force, args.simulate, args.region, args.task_id, args.suburbs, args.max_runtime, args.ta, args.address)
+    engine = PropertyValueEngine(args.mode, args.force, args.simulate, args.region, args.task_id, args.suburbs, args.max_runtime, args.ta, args.address, args.refill)
     asyncio.run(engine.run())

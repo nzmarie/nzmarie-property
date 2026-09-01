@@ -32,6 +32,11 @@ on:
         required: false
         default: ""
         type: string
+      refill:
+        description: "Run discovery first in backfill mode to find and fill missing addresses"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -136,6 +141,7 @@ jobs:
           BACKFILL_ARGS=(--mode backfill --region auckland --task_id ${{ steps.task_id.outputs.task_id }} --max_runtime 5 --force)
           if [ -n "$ADDRESS" ]; then BACKFILL_ARGS+=(--address "$ADDRESS"); fi
           if [ -n "$SUBURBS" ]; then BACKFILL_ARGS+=(--suburbs "$SUBURBS"); fi
+          if [ "${{ inputs.refill }}" = "true" ]; then BACKFILL_ARGS+=(--refill); fi
 
           python scrapers/property_value_engine.py "${BACKFILL_ARGS[@]}"
 
@@ -181,7 +187,7 @@ jobs:
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: token $GITHUB_TOKEN" \
               https://api.github.com/repos/${{ github.repository }}/actions/workflows/property_scraper_auckland.yml/dispatches \
-              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug || 'north-shore-city' }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"address\":\"${{ inputs.address }}\",\"force_run\":\"false\"}}"
+               -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug || 'north-shore-city' }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"address\":\"${{ inputs.address }}\",\"refill\":\"${{ inputs.refill }}\",\"force_run\":\"false\"}}"
             echo "✅ Next run triggered to continue from breakpoint"
           else
             echo "Task has no saved progress. No auto-trigger performed."

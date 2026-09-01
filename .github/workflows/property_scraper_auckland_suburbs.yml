@@ -32,6 +32,11 @@ on:
         required: false
         default: ""
         type: string
+      refill:
+        description: "Run discovery first in backfill mode to find and fill missing addresses"
+        type: boolean
+        required: false
+        default: false
 
   # schedule:
   #   - cron: "0 0 * * *"  # Disabled — manual trigger only
@@ -143,6 +148,7 @@ jobs:
             --max_runtime 5 \
             --force \
             $([ -n "$ADDRESS" ] && echo "--address \"$ADDRESS\"")
+            ${{ inputs.refill && '--refill' || '' }}
 
       - name: Run Refresh Mode
         if: steps.check_lock.outputs.should_run == 'true' && inputs.mode == 'refresh'
@@ -189,7 +195,7 @@ jobs:
               -H "Accept: application/vnd.github.v3+json" \
               -H "Authorization: token $GITHUB_TOKEN" \
               https://api.github.com/repos/${{ github.repository }}/actions/workflows/property_scraper_auckland_suburbs.yml/dispatches \
-              -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"address\":\"${{ inputs.address }}\",\"force_run\":\"false\"}}"
+               -d "{\"ref\":\"main\",\"inputs\":{\"mode\":\"$NEXT_MODE\",\"ta_slug\":\"${{ inputs.ta_slug }}\",\"suburbs\":\"${{ inputs.suburbs }}\",\"address\":\"${{ inputs.address }}\",\"refill\":\"${{ inputs.refill }}\",\"force_run\":\"false\"}}"
             echo "✅ Next run triggered to continue from breakpoint"
           else
             echo "Task has no saved progress. No auto-trigger performed."
